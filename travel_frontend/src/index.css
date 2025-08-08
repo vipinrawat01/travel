@@ -1,0 +1,168 @@
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+/* Futuristic AI Travel Assistant Design System */
+
+@layer base {
+  :root {
+    /* Background System */
+    --background: 215 30% 8%;
+    --background-secondary: 215 25% 12%;
+    --background-tertiary: 215 20% 16%;
+    --foreground: 210 20% 98%;
+    --foreground-secondary: 210 15% 85%;
+    --foreground-muted: 210 10% 65%;
+
+    /* Card System */
+    --card: 215 25% 12%;
+    --card-secondary: 215 20% 16%;
+    --card-foreground: 210 20% 98%;
+
+    /* AI Accent System */
+    --ai-primary: 245 83% 67%;
+    --ai-secondary: 250 89% 74%;
+    --ai-tertiary: 198 93% 60%;
+    --ai-success: 142 76% 36%;
+    --ai-warning: 38 92% 50%;
+    --ai-danger: 0 84% 60%;
+
+    /* Glass Effects */
+    --glass-primary: 215 25% 12% / 0.8;
+    --glass-secondary: 215 20% 16% / 0.6;
+    --glass-border: 210 20% 98% / 0.1;
+
+    /* Interactive States */
+    --hover: 215 20% 20%;
+    --active: 215 25% 18%;
+    --border: 210 20% 98% / 0.1;
+    --input: 215 20% 16%;
+    --ring: 245 83% 67%;
+
+    /* Shadows & Glows */
+    --glow-primary: 0px 0px 20px hsl(245 83% 67% / 0.3);
+    --glow-secondary: 0px 0px 15px hsl(250 89% 74% / 0.2);
+    --shadow-glass: 0px 8px 32px rgba(0, 0, 0, 0.4);
+    --shadow-card: 0px 4px 16px rgba(0, 0, 0, 0.2);
+
+    --radius: 0.75rem;
+    --radius-lg: 1rem;
+    --radius-xl: 1.5rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  
+  body {
+    @apply bg-background text-foreground font-inter antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  /* Hide scrollbar for webkit browsers (Chrome, Safari, Edge) */
+  ::-webkit-scrollbar {
+    width: 0px;
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: transparent;
+  }
+
+  /* Hide scrollbar for Firefox */
+  html {
+    scrollbar-width: none;
+  }
+
+  /* Ensure scrolling still works */
+  body {
+    overflow-y: scroll;
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
+
+@layer components {
+  /* Glass Card System */
+  .glass-card {
+    @apply bg-card/80 backdrop-blur-xl border border-white/10 rounded-xl shadow-[0_8px_32px_rgba(0,0,0,0.4)];
+  }
+
+  .glass-card-secondary {
+    @apply bg-card-secondary/60 backdrop-blur-lg border border-white/5 rounded-lg shadow-[0_4px_16px_rgba(0,0,0,0.2)];
+  }
+
+  /* AI Glow Effects */
+  .ai-glow {
+    @apply shadow-[0_0_20px_hsl(245_83%_67%_/_0.3)];
+  }
+
+  .ai-glow-secondary {
+    @apply shadow-[0_0_15px_hsl(250_89%_74%_/_0.2)];
+  }
+
+  /* Interactive Elements */
+  .interactive-hover {
+    @apply transition-all duration-300 hover:bg-hover active:bg-active;
+  }
+
+  .ai-button-primary {
+    @apply bg-gradient-to-r from-ai-primary to-ai-secondary text-white font-medium px-6 py-3 rounded-xl transition-all duration-300 hover:shadow-[0_0_20px_hsl(245_83%_67%_/_0.4)] hover:scale-105 active:scale-95;
+  }
+
+  .ai-button-secondary {
+    @apply glass-card-secondary text-foreground font-medium px-6 py-3 rounded-xl interactive-hover;
+  }
+
+  /* Agent Node Animation */
+  .agent-node {
+    @apply relative glass-card p-4 ai-glow-secondary;
+  }
+
+  .agent-connection {
+    @apply absolute w-0.5 bg-gradient-to-b from-ai-primary to-ai-secondary opacity-60;
+    animation: pulse-flow 2s ease-in-out infinite;
+  }
+
+  /* Text Styles */
+  .text-hero {
+    @apply text-4xl md:text-6xl font-bold bg-gradient-to-r from-foreground to-foreground-secondary bg-clip-text text-transparent;
+  }
+
+  .text-ai-accent {
+    @apply bg-gradient-to-r from-ai-primary to-ai-secondary bg-clip-text text-transparent font-semibold;
+  }
+
+  /* Input Styles */
+  .ai-input {
+    @apply glass-card-secondary w-full px-4 py-3 rounded-xl text-foreground placeholder-foreground-muted focus:outline-none focus:ring-2 focus:ring-ai-primary/50 focus:border-ai-primary/50 transition-all duration-300;
+  }
+}
+
+@keyframes pulse-flow {
+  0%, 100% { opacity: 0.3; transform: scaleY(1); }
+  50% { opacity: 0.8; transform: scaleY(1.1); }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-10px); }
+}
+
+@keyframes glow-pulse {
+  0%, 100% { box-shadow: 0 0 20px hsl(245 83% 67% / 0.3); }
+  50% { box-shadow: 0 0 30px hsl(245 83% 67% / 0.6); }
+}

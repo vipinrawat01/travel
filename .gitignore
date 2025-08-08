@@ -1,0 +1,57 @@
+# --- Global ---
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.swp
+*.swo
+.cursor/
+
+# --- Environment ---
+*.env
+.env
+.env.*
+!*.env.example
+
+# --- Python / Django ---
+__pycache__/
+*.py[cod]
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+.coverage
+coverage.xml
+htmlcov/
+db.sqlite3
+media/
+staticfiles/
+static/
+
+# Django local settings overrides
+local_settings.py
+
+# --- Node / Vite / React ---
+node_modules/
+dist/
+.parcel-cache/
+.cache/
+.vite/
+vite.svg
+.eslintcache
+coverage/
+travel_frontend/bun.lockb
+
+# --- IDE / Editors ---
+.vscode/
+.idea/
+*.iml
+
+# --- OS / Misc ---
+*.orig
+*.bak
+*.retry
+
