@@ -16,8 +16,18 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path, include
+from django.http import JsonResponse
+
+
+def root_ok(_request):
+    return JsonResponse({
+        "status": "ok",
+        "service": "travel_backend",
+        "api_base": "/api/"
+    })
 
 urlpatterns = [
+    path('', root_ok, name='root_ok'),
     path('admin/', admin.site.urls),
     path('api/', include('travel.urls')),
 ]
