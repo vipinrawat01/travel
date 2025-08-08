@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { ArrowLeft, Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import { useNavigate } from 'react-router-dom';
 
 interface LoginPageProps {
   onBack: () => void;
@@ -11,6 +12,7 @@ interface LoginPageProps {
 
 const LoginPage: React.FC<LoginPageProps> = ({ onBack, onSwitchToSignup }) => {
   const { login, error, clearError } = useAuth();
+  const navigate = useNavigate();
   const [formData, setFormData] = useState({
     username: '',
     password: ''
@@ -29,8 +31,7 @@ const LoginPage: React.FC<LoginPageProps> = ({ onBack, onSwitchToSignup }) => {
     
     try {
       await login(formData);
-      // Login successful - the AuthContext will handle the state update
-      // You can add navigation logic here if needed
+      navigate('/');
     } catch (error) {
       // Error is handled by the AuthContext
       console.error('Login failed:', error);

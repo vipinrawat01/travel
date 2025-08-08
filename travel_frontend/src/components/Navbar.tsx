@@ -33,23 +33,27 @@ const Navbar: React.FC<NavbarProps> = ({ onAuthClick, onProfileClick, isAuthenti
           </div>
 
           <div className="hidden md:flex items-center space-x-4">
-            <Button
-              variant="ghost"
-              onClick={handleMyTripsClick}
-              className="flex items-center space-x-2"
-            >
-              <MapPin className="w-4 h-4" />
-              <span>My Trips</span>
-            </Button>
+            {isAuthenticated && (
+              <>
+                <Button
+                  variant="ghost"
+                  onClick={handleMyTripsClick}
+                  className="flex items-center space-x-2"
+                >
+                  <MapPin className="w-4 h-4" />
+                  <span>My Trips</span>
+                </Button>
 
-            <Button
-              variant="ghost"
-              onClick={handlePlannerClick}
-              className="flex items-center space-x-2"
-            >
-              <Bot className="w-4 h-4" />
-              <span>AI Planner</span>
-            </Button>
+                <Button
+                  variant="ghost"
+                  onClick={handlePlannerClick}
+                  className="flex items-center space-x-2"
+                >
+                  <Bot className="w-4 h-4" />
+                  <span>AI Planner</span>
+                </Button>
+              </>
+            )}
 
             {!isAuthenticated ? (
               <div className="flex items-center space-x-2">

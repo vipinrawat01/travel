@@ -1,5 +1,8 @@
 
 import React from 'react';
+import { Button } from '@/components/ui/button';
+import { useAuth } from '@/contexts/AuthContext';
+import { useNavigate } from 'react-router-dom';
 import { 
   Sparkles, 
   MapPin, 
@@ -12,6 +15,8 @@ interface OnboardingScreenProps {
 }
 
 const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete }) => {
+  const { isAuthenticated } = useAuth();
+  const navigate = useNavigate();
   const agents = [
     {
       name: "Travel Planner",
@@ -36,6 +41,19 @@ const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete }) => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-background via-background-secondary to-background-tertiary flex items-center justify-center p-6">
       <div className="max-w-4xl mx-auto text-center space-y-12">
+        {/* Call-to-action button at top of page above the cards */}
+        <div className="flex justify-center">
+          {isAuthenticated ? (
+            <Button onClick={() => navigate('/', { state: { showPlanning: true } })} className="ai-button-primary px-8 py-6 text-lg">
+              Open AI Planner
+            </Button>
+          ) : (
+            <Button onClick={onComplete} className="ai-button-primary px-8 py-6 text-lg">
+              Get Started
+            </Button>
+          )}
+        </div>
+
         {/* Header */}
         <div className="space-y-6 animate-slide-in-up">
           <div className="flex items-center justify-center space-x-3 mb-8">
