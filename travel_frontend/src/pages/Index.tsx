@@ -18,14 +18,22 @@ const Index = () => {
   useEffect(() => {
     // Check if we should show planning screen from navbar
     if (location.state?.showPlanning) {
-      setCurrentScreen('planning');
+      if (isAuthenticated) {
+        setCurrentScreen('planning');
+      } else {
+        setCurrentScreen('login');
+      }
     }
 
     // Check if we should show planning screen (when editing a trip)
     const showPlanningScreen = localStorage.getItem('showPlanningScreen');
     if (showPlanningScreen) {
       localStorage.removeItem('showPlanningScreen');
-      setCurrentScreen('planning');
+      if (isAuthenticated) {
+        setCurrentScreen('planning');
+      } else {
+        setCurrentScreen('login');
+      }
     }
 
     const handleShowTripResults = (event: CustomEvent) => {
@@ -38,7 +46,7 @@ const Index = () => {
     return () => {
       window.removeEventListener('showTripResults' as any, handleShowTripResults);
     };
-  }, [location]);
+  }, [location, isAuthenticated]);
 
   const handleAuthClick = (type: 'login' | 'signup') => {
     setCurrentScreen(type);
@@ -79,7 +87,7 @@ const Index = () => {
               onProfileClick={handleProfileClick}
               isAuthenticated={isAuthenticated}
             />
-            <OnboardingScreen onComplete={() => setCurrentScreen('planning')} />
+            <OnboardingScreen onComplete={() => setCurrentScreen(isAuthenticated ? 'planning' : 'login')} />
           </div>
         );
       case 'planning':
@@ -133,7 +141,7 @@ const Index = () => {
               onProfileClick={handleProfileClick}
               isAuthenticated={isAuthenticated}
             />
-            <OnboardingScreen onComplete={() => setCurrentScreen('planning')} />
+            <OnboardingScreen onComplete={() => setCurrentScreen(isAuthenticated ? 'planning' : 'login')} />
           </div>
         );
     }
