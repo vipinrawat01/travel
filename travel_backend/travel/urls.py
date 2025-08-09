@@ -16,6 +16,7 @@ urlpatterns = [
     path('trips/', views.TripListCreateView.as_view(), name='trip_list_create'),
     path('trips/<uuid:pk>/', views.TripDetailView.as_view(), name='trip_detail'),
     path('trips/<uuid:trip_id>/summary/', views.trip_summary, name='trip_summary'),
+    path('trips/<uuid:trip_id>/itinerary/generate/', views.generate_itinerary, name='generate_itinerary'),
     
     # Trip items endpoints
     path('trips/<uuid:trip_id>/items/', views.TripItemListView.as_view(), name='trip_item_list'),

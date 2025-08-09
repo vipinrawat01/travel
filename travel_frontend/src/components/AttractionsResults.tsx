@@ -31,6 +31,22 @@ const AttractionsResults: React.FC<AttractionsResultsProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Rehydrate last generated results for current destination from localStorage
+  useEffect(() => {
+    try {
+      const planningRaw = localStorage.getItem('tripPlanningData');
+      if (!planningRaw) return;
+      const planning = JSON.parse(planningRaw);
+      const dest = planning.cityHint || planning.destination;
+      const cacheRaw = localStorage.getItem('places_cache_attractions');
+      if (!cacheRaw) return;
+      const cache = JSON.parse(cacheRaw);
+      if (cache && cache.destination === dest && Array.isArray(cache.items)) {
+        setItems(cache.items);
+      }
+    } catch {}
+  }, []);
+
   useEffect(() => {
     setSelectedAttractionsState(selectedAttractions);
   }, [selectedAttractions]);
@@ -163,6 +179,10 @@ const AttractionsResults: React.FC<AttractionsResultsProps> = ({
         throw new Error('No attractions found');
       }
       setItems(res.data.items);
+      // Cache for this destination
+      try {
+        localStorage.setItem('places_cache_attractions', JSON.stringify({ destination, items: res.data.items }));
+      } catch {}
     } catch (e: any) {
       // Retry with simplified city token if geocoding failed
       try {

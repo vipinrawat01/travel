@@ -1,5 +1,5 @@
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Calendar, Music, Trophy, Star, MapPin, Clock, Sparkles, ExternalLink } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { eventsService } from '@/services/eventsService';
@@ -20,6 +20,17 @@ const EventsResults: React.FC = () => {
   const [events, setEvents] = useState<Event[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Load cached events so they persist across tab switches
+  useEffect(() => {
+    try {
+      const cached = localStorage.getItem('events_cache_results');
+      if (cached) {
+        const arr = JSON.parse(cached);
+        if (Array.isArray(arr) && arr.length > 0) setEvents(arr);
+      }
+    } catch {}
+  }, []);
 
   const handleGenerate = async () => {
     try {
@@ -57,6 +68,9 @@ const EventsResults: React.FC = () => {
         url: e.url,
       }));
       setEvents(items);
+      try {
+        localStorage.setItem('events_cache_results', JSON.stringify(items));
+      } catch {}
       if (items.length === 0) setError('No events found for these dates and destination.');
     } catch (e: any) {
       setError(e?.message || 'Failed to fetch events');
@@ -87,11 +101,6 @@ const EventsResults: React.FC = () => {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center space-x-3 mb-6">
-        <Music className="w-6 h-6 text-ai-primary" />
-        <h2 className="text-2xl font-semibold text-ai-accent">Local Events</h2>
-      </div>
-
       <div className="space-y-4">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center space-x-3">
@@ -103,7 +112,28 @@ const EventsResults: React.FC = () => {
           </Button>
         </div>
         {loading && <div className="text-sm text-foreground-muted">Searching events...</div>}
-        {error && <div className="text-sm text-red-500">{error}</div>}
+        {error && (
+          <div className="glass-card-secondary p-4 rounded-md border border-border/50">
+            <div className="flex items-start space-x-3">
+              <Calendar className="w-5 h-5 text-ai-warning" />
+              <div>
+                <div className="font-medium text-foreground">Couldn’t load events</div>
+                <div className="text-sm text-foreground-muted">{error}</div>
+              </div>
+            </div>
+          </div>
+        )}
+        {!loading && !error && events.length === 0 && (
+          <div className="glass-card p-6 rounded-lg text-center">
+            <div className="mx-auto w-12 h-12 rounded-full bg-background-tertiary flex items-center justify-center mb-3">
+              <Calendar className="w-6 h-6 text-ai-secondary" />
+            </div>
+            <div className="text-lg font-semibold text-foreground mb-1">No events found</div>
+            <div className="text-sm text-foreground-muted">
+              Try adjusting your dates or search another nearby city. We’ll keep looking for great happenings.
+            </div>
+          </div>
+        )}
         {events.map((event, index) => {
           const EventIcon = getEventIcon(event.type);
           

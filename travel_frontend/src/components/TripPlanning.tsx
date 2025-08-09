@@ -42,8 +42,26 @@ const TripPlanning: React.FC<TripPlanningProps> = ({ onBack }) => {
   useEffect(() => {
     const editingTrip = localStorage.getItem('editingTrip');
     if (editingTrip) {
-      const tripData = JSON.parse(editingTrip);
-      setFormData(tripData);
+      try {
+        const tripData = JSON.parse(editingTrip);
+        // Normalize fields explicitly to avoid missing/empty values
+        setFormData((prev) => ({
+          destination: String(tripData.destination ?? prev.destination ?? ''),
+          startDate: String(tripData.startDate ?? prev.startDate ?? ''),
+          endDate: String(tripData.endDate ?? prev.endDate ?? ''),
+          budget: String(
+            tripData.budget !== undefined && tripData.budget !== null
+              ? tripData.budget
+              : prev.budget ?? ''
+          ),
+          travelers: String(
+            tripData.travelers !== undefined && tripData.travelers !== null
+              ? tripData.travelers
+              : prev.travelers ?? '1'
+          ),
+          travelStyle: String(tripData.travelStyle ?? prev.travelStyle ?? ''),
+        }));
+      } catch {}
       localStorage.removeItem('editingTrip'); // Clear after loading
     }
   }, []);

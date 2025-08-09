@@ -33,6 +33,21 @@ const FoodResults: React.FC<FoodResultsProps> = ({
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    try {
+      const planningRaw = localStorage.getItem('tripPlanningData');
+      if (!planningRaw) return;
+      const planning = JSON.parse(planningRaw);
+      const dest = planning.cityHint || planning.destination;
+      const cacheRaw = localStorage.getItem('places_cache_food');
+      if (!cacheRaw) return;
+      const cache = JSON.parse(cacheRaw);
+      if (cache && cache.destination === dest && Array.isArray(cache.items)) {
+        setItems(cache.items);
+      }
+    } catch {}
+  }, []);
+
+  useEffect(() => {
     setSelectedRestaurantsState(selectedRestaurants);
   }, [selectedRestaurants]);
 
@@ -172,6 +187,9 @@ const FoodResults: React.FC<FoodResultsProps> = ({
         throw new Error('No restaurants found');
       }
       setItems(res.data.items);
+      try {
+        localStorage.setItem('places_cache_food', JSON.stringify({ destination, items: res.data.items }));
+      } catch {}
     } catch (e: any) {
       // Retry with simplified city token if geocoding failed
       try {

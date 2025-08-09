@@ -61,6 +61,39 @@ const TripResults: React.FC<TripResultsProps> = ({ onBack }) => {
         transport: []
       }));
     }
+    
+    // If a valid trip exists, load planning stages to auto-populate selections
+    (async () => {
+      try {
+        const tid = localStorage.getItem('currentTripId');
+        if (!tid || tid === 'undefined' || tid === 'null') return;
+        const stages = await tripService.getTripPlanningStages(tid);
+        if (Array.isArray(stages)) {
+          const byType: Record<string, any> = {};
+          for (const s of stages) {
+            if (s && s.stage_type) byType[s.stage_type] = s;
+          }
+          // Only set if not already set from editingTripResults cache
+          if (!selectedFlight && byType['flight'] && Array.isArray(byType['flight'].selected_items) && byType['flight'].selected_items.length > 0) {
+            setSelectedFlight(byType['flight'].selected_items[0]);
+          }
+          if (!selectedHotel && byType['hotel'] && Array.isArray(byType['hotel'].selected_items) && byType['hotel'].selected_items.length > 0) {
+            setSelectedHotel(byType['hotel'].selected_items[0]);
+          }
+          if ((!selectedAttractions || selectedAttractions.length === 0) && byType['attractions'] && Array.isArray(byType['attractions'].selected_items)) {
+            setSelectedAttractions(byType['attractions'].selected_items);
+          }
+          if ((!selectedRestaurants || selectedRestaurants.length === 0) && byType['food'] && Array.isArray(byType['food'].selected_items)) {
+            setSelectedRestaurants(byType['food'].selected_items);
+          }
+          if ((!selectedTransport || selectedTransport.length === 0) && byType['transport'] && Array.isArray(byType['transport'].selected_items)) {
+            setSelectedTransport(byType['transport'].selected_items);
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to preload planning stages', e);
+      }
+    })();
   }, []);
 
   const handleFlightSelect = (flight: any) => {

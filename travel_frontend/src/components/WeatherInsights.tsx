@@ -61,6 +61,40 @@ const WeatherInsights: React.FC = () => {
 
   const toIso = (d: Date) => d.toISOString().slice(0, 10);
 
+  // Clamp requested date range to Open-Meteo constraints (max 16 days, valid ordering)
+  const clampForecastWindow = (startISO: string, endISO: string): { startISO: string; endISO: string } => {
+    try {
+      const today = new Date();
+      const maxEnd = new Date();
+      maxEnd.setDate(today.getDate() + 15); // inclusive window ≈ 16 days
+      let start = new Date(startISO);
+      let end = new Date(endISO);
+      // Normalize invalids
+      if (isNaN(start.getTime())) start = today;
+      if (isNaN(end.getTime())) {
+        end = new Date(start);
+        end.setDate(start.getDate() + 6);
+      }
+      // Ensure start <= end
+      if (start > end) {
+        const tmp = new Date(start);
+        end = new Date(tmp);
+        end.setDate(tmp.getDate() + 6);
+      }
+      // Ensure start is not too far in the past (Open-Meteo forecast API is future oriented)
+      const minStart = today;
+      if (start < minStart) start = new Date(minStart);
+      // Cap end to max horizon
+      if (end > maxEnd) end = new Date(maxEnd);
+      return { startISO: toIso(start), endISO: toIso(end) };
+    } catch {
+      const todayISO = toIso(new Date());
+      const end = new Date();
+      end.setDate(end.getDate() + 6);
+      return { startISO: todayISO, endISO: toIso(end) };
+    }
+  };
+
   const weatherCodeToCondition = (code: number): string => {
     if ([0].includes(code)) return 'Sunny';
     if ([1, 2].includes(code)) return 'Partly Cloudy';
@@ -165,16 +199,63 @@ const WeatherInsights: React.FC = () => {
       };
 
       const tryOpenMeteo = async (): Promise<CityWeather | null> => {
-        const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weathercode,windspeed_10m_max&timezone=auto&start_date=${startISO}&end_date=${endISO}`;
-        const wxRes = await fetch(url);
-        if (!wxRes.ok) return null;
-        const wx = await wxRes.json();
+        const dailyPref = 'temperature_2m_max,temperature_2m_min,precipitation_probability_max,weathercode,windspeed_10m_max';
+        const dailyAlt = 'temperature_2m_max,temperature_2m_min,precipitation_sum,weathercode,windspeed_10m_max';
+
+        const fetchWx = async (
+          dailyVars: string,
+          opts?: { useClamped?: boolean; useForecastDays?: number }
+        ) => {
+          const params: string[] = [
+            `latitude=${lat}`,
+            `longitude=${lon}`,
+            `timezone=auto`,
+          ];
+          if (opts?.useForecastDays) {
+            params.push(`forecast_days=${opts.useForecastDays}`);
+          } else {
+            const window = opts?.useClamped ? clampForecastWindow(startISO, endISO) : { startISO, endISO };
+            params.push(`start_date=${window.startISO}`);
+            params.push(`end_date=${window.endISO}`);
+          }
+          params.push(`daily=${dailyVars}`);
+          const url = `https://api.open-meteo.com/v1/forecast?${params.join('&')}`;
+          try {
+            const res = await fetch(url);
+            if (!res.ok) return null;
+            return await res.json();
+          } catch {
+            return null;
+          }
+        };
+
+        // 1) Original window, preferred daily; fallback to alt
+        let wx = await fetchWx(dailyPref);
+        if (!wx) wx = await fetchWx(dailyAlt);
+
+        // 2) Clamped window, preferred then alt
+        if (!wx) wx = await fetchWx(dailyPref, { useClamped: true });
+        if (!wx) wx = await fetchWx(dailyAlt, { useClamped: true });
+
+        // 3) No explicit dates, limited forecast_days
+        if (!wx) wx = await fetchWx(dailyAlt, { useForecastDays: 7 });
+        if (!wx) wx = await fetchWx(dailyPref, { useForecastDays: 7 });
+
+        if (!wx) return null;
+
         const daily = wx?.daily;
         if (!daily) return null;
+
         const days: WeatherDay[] = (daily.time || []).map((iso: string, idx: number) => {
           const high = Number(daily.temperature_2m_max?.[idx] ?? 0);
           const low = Number(daily.temperature_2m_min?.[idx] ?? 0);
-          const precipitation = Number(daily.precipitation_probability_max?.[idx] ?? 0);
+          let precipitation = 0;
+          if (Array.isArray(daily.precipitation_probability_max)) {
+            precipitation = Number(daily.precipitation_probability_max?.[idx] ?? 0);
+          } else if (Array.isArray(daily.precipitation_sum)) {
+            const mm = Number(daily.precipitation_sum?.[idx] ?? 0);
+            precipitation = Math.max(0, Math.min(100, Math.round(mm * 15)));
+          }
           const wind = Number(daily.windspeed_10m_max?.[idx] ?? 0);
           const cond = weatherCodeToCondition(Number(daily.weathercode?.[idx] ?? 0));
           const recommendation = getRecommendation({ high, precipitation, wind, condition: cond });

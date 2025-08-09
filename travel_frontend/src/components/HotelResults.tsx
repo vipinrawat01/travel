@@ -1,5 +1,5 @@
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Hotel, Star, MapPin, Wifi, Car, Coffee, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { hotelService, type HotelItem } from '@/services/hotelService';
@@ -60,6 +60,17 @@ const HotelResults: React.FC<HotelResultsProps> = ({ onHotelSelect, selectedHote
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Load cached hotels so list persists across tab switches
+  useEffect(() => {
+    try {
+      const cached = localStorage.getItem('hotels_cache_results');
+      if (cached) {
+        const arr = JSON.parse(cached);
+        if (Array.isArray(arr) && arr.length > 0) setHotels(arr);
+      }
+    } catch {}
+  }, []);
+
   const getCategoryColor = (category: string) => {
     switch (category) {
       case 'luxury': return 'text-ai-primary';
@@ -102,6 +113,19 @@ const HotelResults: React.FC<HotelResultsProps> = ({ onHotelSelect, selectedHote
         } catch {}
       }
 
+      // Ensure valid date ordering
+      try {
+        const sd = new Date(startDate);
+        const ed = new Date(endDate);
+        if (isNaN(sd.getTime()) || isNaN(ed.getTime()) || ed < sd) {
+          const now = new Date();
+          const later = new Date();
+          later.setDate(now.getDate() + 3);
+          startDate = now.toISOString().slice(0, 10);
+          endDate = later.toISOString().slice(0, 10);
+        }
+      } catch {}
+
       // Compute nights and a per-night budget per room/person heuristic
       const nights = (() => {
         try {
@@ -132,6 +156,7 @@ const HotelResults: React.FC<HotelResultsProps> = ({ onHotelSelect, selectedHote
         return undefined;
       })();
 
+      // First attempt with constraints
       const resp = await hotelService.searchHotels({
         destination,
         check_in_date: startDate,
@@ -141,7 +166,19 @@ const HotelResults: React.FC<HotelResultsProps> = ({ onHotelSelect, selectedHote
         country: userCountry,
       });
 
-      const fetched: HotelItem[] = hotelService.extractHotelsFromResponse(resp);
+      let fetched: HotelItem[] = hotelService.extractHotelsFromResponse(resp);
+
+      // Retry with relaxed filters if nothing found
+      if (!fetched.length) {
+        const resp2 = await hotelService.searchHotels({
+          destination,
+          check_in_date: startDate,
+          check_out_date: endDate,
+          adults: travelers,
+        });
+        fetched = hotelService.extractHotelsFromResponse(resp2);
+      }
+
       if (fetched.length) {
         // Map to local Hotel interface
         const mapped: Hotel[] = fetched.map((h) => {
@@ -160,6 +197,10 @@ const HotelResults: React.FC<HotelResultsProps> = ({ onHotelSelect, selectedHote
           };
         });
         setHotels(mapped);
+        try {
+          localStorage.setItem('hotels_cache_results', JSON.stringify(mapped));
+        } catch {}
+        setError(null);
       } else {
         setError('No hotels found for the selected dates and destination.');
       }

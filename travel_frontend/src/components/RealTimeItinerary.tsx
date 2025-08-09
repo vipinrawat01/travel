@@ -17,6 +17,7 @@ import {
   AlertTriangle
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { tripService } from '@/services/tripService';
 
 interface ItineraryDay {
   date: string;
@@ -48,7 +49,31 @@ const RealTimeItinerary: React.FC = () => {
   const [isLive, setIsLive] = useState(false);
   const [activities, setActivities] = useState<ItineraryDay[]>([]);
 
-  // Mock data with real-time capabilities
+  // Convert backend itinerary into local ItineraryDay shape
+  const fromBackend = (data: any): ItineraryDay[] => {
+    const plans = data?.day_plans || [];
+    return plans.map((p: any) => ({
+      date: String(p.date || ''),
+      dayNumber: Number(p.day_number || 0),
+      weather: String(p.weather || ''),
+      walkingDistance: String(p.walking_distance || '—'),
+      totalCost: Number(p.total_cost || 0),
+      activities: (Array.isArray(p.activities) ? p.activities : []).map((a: any, idx: number) => ({
+        id: String(idx + 1),
+        time: String(a.time || '09:00'),
+        type: (a.type || 'attraction') as Activity['type'],
+        title: String(a.title || ''),
+        location: String(a.location || ''),
+        duration: String(a.duration || '1.0'),
+        cost: Number(a.cost || 0),
+        notes: a.notes ? String(a.notes) : undefined,
+        tips: a.tips ? String(a.tips) : undefined,
+        completed: false,
+      })),
+    }));
+  };
+
+  // Fallback mock
   const initializeActivities = (): ItineraryDay[] => [
     {
       date: 'December 16, 2024',
@@ -215,15 +240,48 @@ const RealTimeItinerary: React.FC = () => {
   ];
 
   useEffect(() => {
-    setActivities(initializeActivities());
-    
+    let cancelled = false;
+    (async () => {
+      try {
+        const tripId = localStorage.getItem('currentTripId');
+        if (tripId && tripId !== 'null' && tripId !== 'undefined') {
+          // try fetch itinerary; if none, generate
+          const existing = await tripService.getTrip(tripId);
+          const existingPlans = (existing as any)?.itinerary?.day_plans;
+          if (existingPlans && Array.isArray(existingPlans) && existingPlans.length > 0) {
+            if (!cancelled) setActivities(fromBackend((existing as any).itinerary));
+          } else {
+            const gen = await tripService.generateItinerary(tripId);
+            if (gen && gen.data) {
+              if (!cancelled) setActivities(fromBackend(gen.data));
+            }
+          }
+        } else {
+          if (!cancelled) setActivities(initializeActivities());
+        }
+      } catch {
+        if (!cancelled) setActivities(initializeActivities());
+      }
+    })();
+
     // Update current time every minute
     const timer = setInterval(() => {
       setCurrentTime(new Date());
     }, 60000);
-
-    return () => clearInterval(timer);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
   }, []);
+
+  const handleRegenerate = async () => {
+    try {
+      const tripId = localStorage.getItem('currentTripId');
+      if (!tripId || tripId === 'null' || tripId === 'undefined') return;
+      const gen = await tripService.generateItinerary(tripId);
+      if (gen && gen.data) setActivities(fromBackend(gen.data));
+    } catch {}
+  };
 
   const toggleActivityCompletion = (dayIndex: number, activityId: string) => {
     setActivities(prev => prev.map((day, dIndex) => {
@@ -376,6 +434,10 @@ const RealTimeItinerary: React.FC = () => {
           <Button className="ai-button-secondary">
             <Share2 className="w-4 h-4 mr-2" />
             Share Trip
+          </Button>
+          <Button onClick={handleRegenerate} className="ai-button-primary">
+            <RotateCcw className="w-4 h-4 mr-2" />
+            Regenerate Itinerary
           </Button>
         </div>
       </div>

@@ -18,6 +18,7 @@ from .serializers import (
 import os
 import requests
 from urllib.parse import urlencode
+import time
 
 # Authentication Views
 @api_view(['POST'])
@@ -576,8 +577,25 @@ def search_flights_ai(request):
             loop.close()
         
         if result.get('success'):
+            try:
+                import pprint
+                print('[search_flights_ai] success', '\nparams=', {
+                    'origin': origin,
+                    'destination': destination,
+                    'departure_date': departure_date,
+                    'return_date': return_date,
+                    'adults': adults,
+                    'cabin_class': cabin_class,
+                    'country': country,
+                }, '\nsummary=', result.get('data', {}).get('summary'), '\ncount=', result.get('data', {}).get('total_flights'))
+            except Exception:
+                pass
             return Response(result, status=status.HTTP_200_OK)
         else:
+            try:
+                print('[search_flights_ai] failure', result)
+            except Exception:
+                pass
             return Response(result, status=status.HTTP_400_BAD_REQUEST)
             
     except Exception as e:
@@ -605,6 +623,7 @@ def get_airport_suggestions(request):
         {'code': 'SEA', 'name': 'Seattle-Tacoma International Airport', 'city': 'Seattle'},
         {'code': 'DEN', 'name': 'Denver International Airport', 'city': 'Denver'},
         {'code': 'BOS', 'name': 'Boston Logan International Airport', 'city': 'Boston'},
+        {'code': 'TYO', 'name': 'Tokyo (All Airports)', 'city': 'Tokyo'},
         {'code': 'NRT', 'name': 'Narita International Airport', 'city': 'Tokyo'},
         {'code': 'HND', 'name': 'Haneda Airport', 'city': 'Tokyo'},
         {'code': 'CDG', 'name': 'Charles de Gaulle Airport', 'city': 'Paris'},
@@ -615,6 +634,30 @@ def get_airport_suggestions(request):
         {'code': 'HKG', 'name': 'Hong Kong International Airport', 'city': 'Hong Kong'},
         {'code': 'SYD', 'name': 'Sydney Airport', 'city': 'Sydney'},
         {'code': 'MEL', 'name': 'Melbourne Airport', 'city': 'Melbourne'},
+        {'code': 'KIX', 'name': 'Kansai International Airport', 'city': 'Osaka'},
+        {'code': 'ITM', 'name': 'Osaka International (Itami) Airport', 'city': 'Osaka'},
+        {'code': 'DPS', 'name': 'Ngurah Rai International Airport', 'city': 'Bali'},
+        {'code': 'ICN', 'name': 'Incheon International Airport', 'city': 'Seoul'},
+        {'code': 'GMP', 'name': 'Gimpo International Airport', 'city': 'Seoul'},
+        {'code': 'BKK', 'name': 'Suvarnabhumi Airport', 'city': 'Bangkok'},
+        {'code': 'DMK', 'name': 'Don Mueang International Airport', 'city': 'Bangkok'},
+        {'code': 'SGN', 'name': 'Tan Son Nhat International Airport', 'city': 'Ho Chi Minh City'},
+        {'code': 'HAN', 'name': 'Noi Bai International Airport', 'city': 'Hanoi'},
+        {'code': 'KUL', 'name': 'Kuala Lumpur International Airport', 'city': 'Kuala Lumpur'},
+        {'code': 'BOM', 'name': 'Chhatrapati Shivaji Maharaj International Airport', 'city': 'Mumbai'},
+        {'code': 'BLR', 'name': 'Kempegowda International Airport', 'city': 'Bengaluru'},
+        {'code': 'FCO', 'name': 'Leonardo da Vinci–Fiumicino Airport', 'city': 'Rome'},
+        {'code': 'MAD', 'name': 'Adolfo Suárez Madrid–Barajas Airport', 'city': 'Madrid'},
+        {'code': 'BCN', 'name': 'Barcelona–El Prat Airport', 'city': 'Barcelona'},
+        {'code': 'ZRH', 'name': 'Zurich Airport', 'city': 'Zurich'},
+        {'code': 'VIE', 'name': 'Vienna International Airport', 'city': 'Vienna'},
+        {'code': 'PRG', 'name': 'Václav Havel Airport Prague', 'city': 'Prague'},
+        {'code': 'LIS', 'name': 'Humberto Delgado Airport', 'city': 'Lisbon'},
+        {'code': 'ATH', 'name': 'Athens International Airport', 'city': 'Athens'},
+        {'code': 'CAI', 'name': 'Cairo International Airport', 'city': 'Cairo'},
+        {'code': 'EZE', 'name': 'Ministro Pistarini International Airport', 'city': 'Buenos Aires'},
+        {'code': 'GIG', 'name': 'Galeão International Airport', 'city': 'Rio de Janeiro'},
+        {'code': 'CPT', 'name': 'Cape Town International Airport', 'city': 'Cape Town'},
     ]
     
     # Filter airports based on query
@@ -900,6 +943,75 @@ def _km_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return R * c
 
 
+def _geoapify_city_place_id(destination: str, api_key: str) -> str | None:
+    """Get a city-level place_id for use with filter=place:... specifically.
+    Uses Geoapify geocoding with type=city to avoid address-level ids.
+    """
+    try:
+        params = {'text': destination, 'type': 'city', 'limit': 1, 'apiKey': api_key}
+        url = f'https://api.geoapify.com/v1/geocode/search?{urlencode(params)}'
+        r = requests.get(url, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        features = data.get('features', [])
+        if not features:
+            return None
+        props = features[0].get('properties', {})
+        return props.get('place_id')
+    except Exception:
+        return None
+
+
+def _extract_english_name(props: dict) -> str | None:
+    """Prefer English name variants from Geoapify/OSM properties, else None."""
+    if not isinstance(props, dict):
+        return None
+    # Geoapify normalized international names
+    intl = props.get('name_international') or {}
+    if isinstance(intl, dict):
+        en_norm = intl.get('en')
+        if en_norm and isinstance(en_norm, str) and en_norm.strip():
+            return en_norm.strip()
+    # Flat English name fields sometimes present
+    for key in ('name:en', 'name_en'):
+        val = props.get(key)
+        if val and isinstance(val, str) and val.strip():
+            return val.strip()
+    # Raw OSM tags under datasource.raw
+    raw = (props.get('datasource') or {}).get('raw') or {}
+    if isinstance(raw, dict):
+        for key in ('name:en', 'name_en', 'name:ja_rm', 'name:ja-Latn'):
+            val = raw.get(key)
+            if val and isinstance(val, str) and val.strip():
+                return val.strip()
+    return None
+
+
+def _geoapify_boundary_city_place_ids(destination: str, api_key: str) -> list[str]:
+    """Use Boundaries API to fetch city-level place_ids that can be used in filter=place:... queries."""
+    try:
+        params = {
+            'name': destination,
+            'part': 'city',
+            'limit': 5,
+            'format': 'geojson',
+            'apiKey': api_key,
+        }
+        url = f'https://api.geoapify.com/v1/boundaries?{urlencode(params)}'
+        r = requests.get(url, timeout=12)
+        r.raise_for_status()
+        data = r.json()
+        pids: list[str] = []
+        for feat in (data.get('features') or []):
+            props = feat.get('properties') or {}
+            pid = props.get('place_id')
+            if pid:
+                pids.append(pid)
+        return pids
+    except Exception:
+        return []
+
+
 def _best_time_for_category(category: str) -> str:
     c = category.lower()
     if any(k in c for k in ['museum', 'gallery', 'exhibit']):
@@ -1081,7 +1193,7 @@ def search_transport(request):
     try:
         api_key = _get_geoapify_key(request)
         destination = (request.data.get('destination') or '').strip()
-        limit = int(request.data.get('limit', 24))
+        limit = int(request.data.get('limit', 20))
         # Use smaller default radius as per working sample
         radius_m = int(request.data.get('radius_meters', 5000))
         if not destination:
@@ -1091,20 +1203,97 @@ def search_transport(request):
         if not geo:
             return Response({'success': False, 'error': f"Failed to geocode destination: '{destination}'"}, status=400)
 
-        # Always use circle filter with proximity bias per working method
-        categories = 'public_transport'
-        params = {
-            'categories': categories,
-            'filter': f'circle:{geo["lon"]},{geo["lat"]},{radius_m}',
-            'bias': f'proximity:{geo["lon"]},{geo["lat"]}',
-            'lang': 'en',
-            'limit': limit,
-            'apiKey': api_key,
+        # Try multiple attempts, preferring place filter first, then circle fallbacks
+        # Allow client to pass a known-good city place_id
+        client_pid = request.data.get('place_id') if hasattr(request, 'data') else None
+        place_id_geo = geo.get('place_id')
+        city_pid = _geoapify_city_place_id(destination, api_key)
+        boundary_pids = _geoapify_boundary_city_place_ids(destination, api_key)
+        place_ids_to_try = [pid for pid in [client_pid, place_id_geo, city_pid] if pid]
+        # Known overrides for cities where Geoapify returns multiple PIDs; prefer stable one
+        known_city_pid_overrides = {
+            'tokyo': '51cf424cd37178614059d0bb0c5aa3d64140f00103f90144ddcb0f00000000c00208',
         }
-        url = f'https://api.geoapify.com/v2/places?{urlencode(params)}'
-        r = requests.get(url, timeout=20)
-        r.raise_for_status()
-        raw = r.json()
+        dest_norm = destination.strip().lower()
+        for key, pid in known_city_pid_overrides.items():
+            if key in dest_norm and pid not in place_ids_to_try:
+                place_ids_to_try.insert(0, pid)
+        # Append boundary-derived place ids
+        for pid in boundary_pids:
+            if pid not in place_ids_to_try:
+                place_ids_to_try.append(pid)
+        attempt_specs = []
+        # Exact working circle attempt first (matches user's known-good call)
+        attempt_specs.append({
+            'mode': 'circle',
+            'categories': 'public_transport',
+            'radius': radius_m,
+            'limit': min(20, limit),
+            'timeout': 15,
+        })
+        for pid in place_ids_to_try:
+            attempt_specs.extend([
+                { 'mode': 'place', 'place_id': pid, 'categories': 'public_transport.station,public_transport.subway,public_transport.bus', 'limit': max(40, limit), 'timeout': 10 },
+                { 'mode': 'place', 'place_id': pid, 'categories': 'public_transport', 'limit': max(40, limit), 'timeout': 10 },
+            ])
+        attempt_specs.extend([
+            { 'mode': 'circle', 'categories': 'public_transport.station,public_transport.subway,public_transport.bus', 'radius': radius_m, 'limit': max(30, limit), 'timeout': 12 },
+            { 'mode': 'circle', 'categories': 'public_transport', 'radius': radius_m, 'limit': max(30, limit), 'timeout': 12 },
+            { 'mode': 'circle', 'categories': 'public_transport.station,public_transport.subway,public_transport.bus', 'radius': max(12000, radius_m * 2), 'limit': max(40, limit), 'timeout': 10 },
+        ])
+
+        raw = None
+        for spec in attempt_specs:
+            try:
+                params_iter = {
+                    'categories': spec['categories'],
+                    'lang': 'en',
+                    'limit': int(spec['limit']),
+                    'apiKey': api_key,
+                }
+                if spec['mode'] == 'place' and spec.get('place_id'):
+                    params_iter['filter'] = f"place:{spec['place_id']}"
+                else:
+                    rad = int(spec.get('radius', radius_m))
+                    params_iter['filter'] = f'circle:{geo["lon"]},{geo["lat"]},{rad}'
+                    params_iter['bias'] = f'proximity:{geo["lon"]},{geo["lat"]}'
+                url_iter = f'https://api.geoapify.com/v2/places?{urlencode(params_iter)}'
+                print(f"[transport] attempt mode={spec['mode']} cats={spec['categories']} limit={params_iter['limit']} url={url_iter}")
+                r_iter = requests.get(url_iter, timeout=spec['timeout'])
+                r_iter.raise_for_status()
+                raw = r_iter.json()
+                feats = raw.get('features', [])
+                print(f"[transport] attempt result features={len(feats)}")
+                if feats:
+                    break
+            except (requests.ReadTimeout, requests.Timeout, requests.HTTPError) as e:
+                print(f"[transport] attempt failed: {e}")
+                continue
+        # If still empty, try explicit city place_id as last resort
+        feats = raw.get('features', []) if isinstance(raw, dict) else []
+        if not feats:
+            city_pid = _geoapify_city_place_id(destination, api_key)
+            if city_pid:
+                try:
+                    params_city = {
+                        'categories': 'public_transport',
+                        'filter': f'place:{city_pid}',
+                        'limit': max(30, limit),
+                        'apiKey': api_key,
+                    }
+                    url_city = f'https://api.geoapify.com/v2/places?{urlencode(params_city)}'
+                    print(f"[transport] city-place fallback url={url_city}")
+                    r_city = requests.get(url_city, timeout=10)
+                    r_city.raise_for_status()
+                    raw = r_city.json()
+                    feats = raw.get('features', [])
+                    print(f"[transport] city-place fallback features={len(feats)}")
+                except Exception as e:
+                    print(f"[transport] city-place fallback failed: {e}")
+                    feats = []
+        if raw is None or not feats:
+            print(f"[transport] final 0 items for destination='{destination}' lat={geo['lat']} lon={geo['lon']}")
+            return Response({'success': True, 'data': {'items': [], 'total': 0, 'center': geo}}, status=200)
         features = raw.get('features', [])
         items = []
         seen_ids = set()
@@ -1112,7 +1301,8 @@ def search_transport(request):
         for f in features:
             props = f.get('properties', {})
             fid = props.get('place_id') or props.get('osm_id') or props.get('gid')
-            name = props.get('name') or props.get('address_line1') or 'Unnamed stop'
+            name_en = _extract_english_name(props)
+            name = name_en or props.get('name') or props.get('address_line1') or 'Unnamed stop'
             cats = props.get('categories') or []
             primary_cat = cats[0] if cats else (props.get('category') or 'public_transport')
             lat = props.get('lat') or (f.get('geometry', {}).get('coordinates', [None, None])[1])
@@ -1142,6 +1332,7 @@ def search_transport(request):
             items.append({
                 'id': str(fid),
                 'name': name,
+                'name_native': props.get('name') if name_en else None,
                 'type': primary_cat,
                 'coverage': props.get('suburb') or props.get('city') or '',
                 'convenience': None,
@@ -1152,8 +1343,227 @@ def search_transport(request):
                 'lon': lon,
                 'raw': props,
             })
+        print(f"[transport] final {len(items)} items for destination='{destination}'")
         return Response({'success': True, 'data': {'items': items, 'total': len(items), 'center': geo}})
     except requests.HTTPError as e:
         return Response({'success': False, 'error': f'Geoapify HTTP error: {str(e)}'}, status=502)
     except Exception as e:
         return Response({'success': False, 'error': f'Failed to search transport: {str(e)}'}, status=500)
+
+
+# ---------------------- Itinerary Generation ----------------------
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def generate_itinerary(request, trip_id):
+    """Generate a detailed day-by-day itinerary based on selected trip items.
+    Strategy:
+    - Use TripItems marked is_selected=True; if none, fall back to TripPlanningStage.selected_items
+    - Distribute attractions across days (2-3 per day), schedule meals (lunch ~13:00, dinner ~19:00)
+    - Insert flight arrival/departure blocks when available, hotel check-in on day 1
+    - Persist into TripItinerary.day_plans as a structured list
+    """
+    from datetime import datetime, timedelta
+
+    trip = get_object_or_404(Trip, id=trip_id, user=request.user)
+
+    # Helper: safe value extraction
+    def get(obj, key, default=None):
+        try:
+            v = obj.get(key)
+            return v if v is not None else default
+        except Exception:
+            return default
+
+    # Pull selected TripItems
+    items = list(TripItem.objects.filter(trip=trip, is_selected=True))
+    items_by_type = {t: [] for t in ['flight', 'hotel', 'attraction', 'restaurant', 'transport']}
+    for it in items:
+        items_by_type.get(it.item_type, []).append(it)
+
+    # Fallback to planning stages if no TripItems exist yet
+    if not any(items_by_type.values()):
+        stages = TripPlanningStage.objects.filter(trip=trip)
+        for st in stages:
+            for raw in (st.selected_items or []):
+                t = 'attraction'
+                if st.stage_type in ['flight', 'hotel', 'attractions', 'food', 'transport']:
+                    t = 'restaurant' if st.stage_type == 'food' else st.stage_type.rstrip('s')
+                items_by_type.setdefault(t, []).append({
+                    'name': get(raw, 'name', ''),
+                    'price': get(raw, 'price', 0),
+                    'address': get(raw, 'address', ''),
+                    'duration': get(raw, 'duration', ''),
+                    'bestTime': get(raw, 'bestTime', ''),
+                })
+
+    # Convert TripItem model objects into simple dicts
+    def simplify(it: TripItem):
+        md = it.metadata or {}
+        return {
+            'name': it.name,
+            'price': float(it.price or 0),
+            'address': get(md, 'address', ''),
+            'duration': get(md, 'duration', ''),
+            'bestTime': get(md, 'bestTime', ''),
+        }
+
+    flights = [simplify(x) if isinstance(x, TripItem) else x for x in items_by_type.get('flight', [])]
+    hotels = [simplify(x) if isinstance(x, TripItem) else x for x in items_by_type.get('hotel', [])]
+    attractions = [simplify(x) if isinstance(x, TripItem) else x for x in items_by_type.get('attraction', [])]
+    restaurants = [simplify(x) if isinstance(x, TripItem) else x for x in items_by_type.get('restaurant', [])]
+    transports = [simplify(x) if isinstance(x, TripItem) else x for x in items_by_type.get('transport', [])]
+
+    start = trip.start_date
+    end = trip.end_date
+    if end < start:
+        end = start
+    num_days = (end - start).days + 1
+
+    # Scheduling heuristics
+    def hhmm(h: int, m: int = 0):
+        return f"{h:02d}:{m:02d}"
+
+    # Build day plans
+    day_plans = []
+    attr_idx = 0
+    rest_idx = 0
+
+    for d in range(num_days):
+        date = start + timedelta(days=d)
+        day_label = date.strftime('%B %d, %Y')
+        acts = []
+
+        # Day 1: arrival flight and hotel check-in if available
+        if d == 0:
+            if flights:
+                acts.append({
+                    'time': hhmm(9),
+                    'type': 'flight',
+                    'title': f"Arrive - {flights[0]['name']}",
+                    'location': flights[0].get('address', '') or trip.destination,
+                    'duration': '1.0',
+                    'cost': flights[0].get('price', 0),
+                    'notes': 'Immigration and baggage claim',
+                })
+            if hotels:
+                acts.append({
+                    'time': hhmm(11),
+                    'type': 'hotel',
+                    'title': f"Check-in - {hotels[0]['name']}",
+                    'location': hotels[0].get('address', '') or trip.destination,
+                    'duration': '0.5',
+                    'cost': 0,
+                    'notes': 'Store luggage if early',
+                })
+
+        # Morning attraction
+        if attr_idx < len(attractions):
+            a = attractions[attr_idx]
+            acts.append({
+                'time': hhmm(10),
+                'type': 'attraction',
+                'title': a.get('name', 'Attraction'),
+                'location': a.get('address', '') or trip.destination,
+                'duration': '2.0',
+                'cost': a.get('price', 0),
+                'notes': a.get('bestTime') or '',
+            })
+            attr_idx += 1
+
+        # Lunch
+        if rest_idx < len(restaurants):
+            r = restaurants[rest_idx]
+            acts.append({
+                'time': hhmm(13),
+                'type': 'meal',
+                'title': r.get('name', 'Lunch'),
+                'location': r.get('address', '') or trip.destination,
+                'duration': '1.0',
+                'cost': r.get('price', 0),
+                'notes': 'Local specialty',
+            })
+            rest_idx += 1
+
+        # Afternoon attraction
+        if attr_idx < len(attractions):
+            a = attractions[attr_idx]
+            acts.append({
+                'time': hhmm(15),
+                'type': 'attraction',
+                'title': a.get('name', 'Attraction'),
+                'location': a.get('address', '') or trip.destination,
+                'duration': '2.0',
+                'cost': a.get('price', 0),
+                'notes': a.get('bestTime') or '',
+            })
+            attr_idx += 1
+
+        # Dinner
+        if rest_idx < len(restaurants):
+            r = restaurants[rest_idx]
+            acts.append({
+                'time': hhmm(19),
+                'type': 'meal',
+                'title': r.get('name', 'Dinner'),
+                'location': r.get('address', '') or trip.destination,
+                'duration': '1.5',
+                'cost': r.get('price', 0),
+                'notes': 'Reserve table if possible',
+            })
+            rest_idx += 1
+
+        # Add a transport segment if available
+        if transports:
+            t = transports[min(d, len(transports) - 1)]
+            acts.insert(1 if len(acts) > 1 else 0, {
+                'time': hhmm(9, 30),
+                'type': 'transport',
+                'title': t.get('name', 'Transport'),
+                'location': t.get('address', '') or trip.destination,
+                'duration': '0.5',
+                'cost': t.get('price', 0),
+                'notes': 'Public transport',
+            })
+
+        # Last day: add checkout and departure placeholder
+        if d == num_days - 1:
+            if hotels:
+                acts.append({
+                    'time': hhmm(11),
+                    'type': 'hotel',
+                    'title': f"Checkout - {hotels[0]['name']}",
+                    'location': hotels[0].get('address', '') or trip.destination,
+                    'duration': '0.5',
+                    'cost': 0,
+                    'notes': '',
+                })
+            if flights:
+                acts.append({
+                    'time': hhmm(18),
+                    'type': 'flight',
+                    'title': f"Depart - {flights[-1]['name']}",
+                    'location': trip.destination,
+                    'duration': '1.0',
+                    'cost': flights[-1].get('price', 0),
+                    'notes': 'Arrive at airport 3 hours early',
+                })
+
+        # Aggregate day info
+        total_cost = sum(float(a.get('cost', 0) or 0) for a in acts)
+        day_plans.append({
+            'date': day_label,
+            'day_number': d + 1,
+            'activities': acts,
+            'total_cost': round(total_cost, 2),
+            'walking_distance': '—',
+            'weather': '',
+        })
+
+    # Save to TripItinerary
+    itinerary, _ = TripItinerary.objects.get_or_create(trip=trip)
+    itinerary.day_plans = day_plans
+    itinerary.save()
+
+    ser = TripItinerarySerializer(itinerary)
+    return Response({'success': True, 'data': ser.data})

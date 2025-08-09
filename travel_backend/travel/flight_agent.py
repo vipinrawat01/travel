@@ -12,6 +12,25 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Load Google countries mapping once
+_GOOGLE_COUNTRIES_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'google-countries.json')
+_COUNTRY_NAME_TO_CODE: dict[str, str] = {}
+try:
+    with open(_GOOGLE_COUNTRIES_PATH, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+        for entry in data:
+            code = str(entry.get('country_code', '')).strip().lower()
+            name = str(entry.get('country_name', '')).strip().lower()
+            if code and name:
+                _COUNTRY_NAME_TO_CODE[name] = code
+                _COUNTRY_NAME_TO_CODE[code] = code
+        # Common aliases
+        _COUNTRY_NAME_TO_CODE['uk'] = 'gb'
+        _COUNTRY_NAME_TO_CODE['united kingdom'] = 'gb'
+except Exception:
+    _COUNTRY_NAME_TO_CODE = {}
+
+
 class FlightSearchTool:
     """Tool for searching flights using SerpAPI Google Flights"""
 
@@ -52,12 +71,21 @@ class FlightSearchTool:
             country,
         )
     
-    def _search_serpapi(self, origin: str, destination: str, departure_date: str, 
+    def _normalize_gl(self, country: Optional[str]) -> Optional[str]:
+        try:
+            if not country:
+                return None
+            token = str(country).strip().lower()
+            return _COUNTRY_NAME_TO_CODE.get(token, token if len(token) == 2 else None)
+        except Exception:
+            return None
+
+    def _search_serpapi(self, origin: str, destination: str, departure_date: str,
                         return_date: Optional[str] = None, adults: int = 1, cabin_class: str = "economy",
                         country: Optional[str] = None) -> Dict[str, Any]:
         """Search flights using SerpAPI Google Flights as fallback"""
         try:
-            search_params = {
+            base_params = {
                 "engine": "google_flights",
                 "api_key": self.serpapi_key,
                 "departure_id": origin,
@@ -65,23 +93,39 @@ class FlightSearchTool:
                 "outbound_date": departure_date,
                 "adults": adults,
                 "currency": "USD",
-                "hl": "en"
+                "hl": "en",
             }
-            
             if return_date:
-                search_params["return_date"] = return_date
-            
+                base_params["return_date"] = return_date
             if cabin_class != "economy":
-                search_params["cabin_class"] = cabin_class
+                base_params["cabin_class"] = cabin_class
 
-            # Country / geolocation: SerpAPI supports 'gl' (country) to localize results
-            if country and isinstance(country, str) and len(country) == 2:
-                search_params["gl"] = country.lower()
-            
-            search = GoogleSearch(search_params)
-            results = search.get_dict()
-            
-            return self._process_serpapi_results(results)
+            gl_primary = self._normalize_gl(country)
+            gl_candidates = []
+            if gl_primary:
+                gl_candidates.append(gl_primary)
+            # Fallbacks per SerpAPI docs and global coverage
+            gl_candidates.extend([None, 'us', 'gb'])
+
+            for gl in gl_candidates:
+                params = dict(base_params)
+                if gl:
+                    params['gl'] = gl
+                elif 'gl' in params:
+                    params.pop('gl', None)
+                try:
+                    # Debug attempt
+                    print(f"[serpapi] attempt gl={gl} dep={origin} arr={destination} date={departure_date}")
+                except Exception:
+                    pass
+                search = GoogleSearch(params)
+                results = search.get_dict()
+                processed = self._process_serpapi_results(results)
+                if processed.get('success') and processed.get('total_results', 0) > 0:
+                    return processed
+
+            # If all attempts empty, return last processed
+            return processed
             
         except Exception as e:
             return {
@@ -95,16 +139,18 @@ class FlightSearchTool:
         processed_flights = []
         
         try:
-            # Extract flight options from SerpAPI response
-            if "flights_results" in results:
-                for flight_option in results["flights_results"]:
-                    processed_flight = self._extract_serpapi_flight_data(flight_option)
-                    if processed_flight:
-                        processed_flights.append(processed_flight)
-            
-            # Also check for other_flights if available
-            if "other_flights" in results:
-                for flight_option in results["other_flights"]:
+            # Extract flight options from SerpAPI response (support both legacy and current keys)
+            collections = []
+            if isinstance(results, dict):
+                if "best_flights" in results and isinstance(results["best_flights"], list):
+                    collections.append(results["best_flights"])
+                if "other_flights" in results and isinstance(results["other_flights"], list):
+                    collections.append(results["other_flights"])
+                if "flights_results" in results and isinstance(results["flights_results"], list):
+                    collections.append(results["flights_results"])  # legacy
+
+            for coll in collections:
+                for flight_option in coll:
                     processed_flight = self._extract_serpapi_flight_data(flight_option)
                     if processed_flight:
                         processed_flights.append(processed_flight)
@@ -114,11 +160,7 @@ class FlightSearchTool:
                 "flights": processed_flights,
                 "total_results": len(processed_flights),
                 "data_source": "serpapi",
-                "search_info": {
-                    "origin": results.get("request_info", {}).get("departure_id"),
-                    "destination": results.get("request_info", {}).get("arrival_id"),
-                    "date": results.get("request_info", {}).get("outbound_date")
-                }
+                "search_info": results.get("request_info", {})
             }
             
         except Exception as e:
@@ -333,7 +375,7 @@ Always return your responses in a structured JSON format that can be easily pars
             'oslo': 'OSL', 'bergen': 'BGO', 'trondheim': 'TRD', 'stavanger': 'SVG',
             'sydney': 'SYD', 'melbourne': 'MEL', 'brisbane': 'BNE', 'perth': 'PER',
             'london': 'LHR', 'paris': 'CDG', 'frankfurt': 'FRA', 'amsterdam': 'AMS',
-            'tokyo': 'HND', 'singapore': 'SIN', 'hong kong': 'HKG', 'new york': 'JFK',
+            'tokyo': 'TYO', 'singapore': 'SIN', 'hong kong': 'HKG', 'new york': 'JFK',
             'delhi': 'DEL', 'mumbai': 'BOM', 'bangkok': 'BKK', 'dubai': 'DXB',
         }
         if city_token in city_to_iata:
@@ -346,7 +388,7 @@ Always return your responses in a structured JSON format that can be easily pars
             'australia': ['SYD', 'MEL', 'BNE', 'PER'],
             'united kingdom': ['LHR', 'LGW', 'MAN', 'EDI'], 'uk': ['LHR', 'LGW', 'MAN', 'EDI'],
             'united states': ['JFK', 'LAX', 'ORD', 'SFO', 'MIA'], 'usa': ['JFK', 'LAX', 'ORD', 'SFO', 'MIA'],
-            'japan': ['HND', 'NRT', 'KIX'],
+            'japan': ['TYO', 'HND', 'NRT', 'KIX'],
             'india': ['DEL', 'BOM', 'BLR'],
         }
         if country_token in country_to_iatas:
@@ -449,31 +491,76 @@ Always return your responses in a structured JSON format that can be easily pars
             
             query += " Provide detailed analysis and recommendations."
             
-            # First, perform a direct SerpAPI search for structured results (fast path)
-            direct_results = self.flight_search.search_flights(
-                origin=origin,
-                destination=destination,
-                departure_date=departure_date,
-                return_date=return_date,
-                adults=adults,
-                cabin_class=cabin_class,
-                country=country,
-            )
-            flights = direct_results.get("flights", []) if isinstance(direct_results, dict) else []
-            if flights:
-                analysis = self._analyze_flights_simple(flights)
-                return {
-                    "success": True,
-                    "data": {
-                        "flights": flights,
-                        "recommendations": analysis.get("recommendations"),
-                        "total_flights": analysis.get("total_flights"),
-                        "price_range": analysis.get("price_range"),
-                        "summary": analysis.get("summary"),
-                        "data_source": direct_results.get("data_source", "serpapi"),
-                    },
-                    "raw_response": None,
-                }
+            # Candidate sets for robust retries
+            def unique(seq):
+                seen = set(); out = []
+                for x in seq:
+                    if x and x not in seen:
+                        seen.add(x); out.append(x)
+                return out
+
+            dest_candidates = [destination] + self._destination_candidates(destination)
+            # Special handling for Tokyo
+            if isinstance(destination, str) and destination.lower().find('tokyo') >= 0:
+                dest_candidates = ['TYO', 'HND', 'NRT'] + dest_candidates
+            dest_candidates = unique(dest_candidates)[:8]
+
+            # Origin candidates based on user country hubs
+            country_hubs = {
+                'us': ['JFK', 'LAX', 'SFO', 'ORD'],
+                'in': ['DEL', 'BOM', 'BLR'],
+                'gb': ['LHR', 'LGW'], 'uk': ['LHR', 'LGW'],
+                'ae': ['DXB', 'AUH'],
+                'sg': ['SIN'],
+                'jp': ['HND', 'NRT'],
+                'au': ['SYD', 'MEL'],
+                'de': ['FRA', 'MUC'],
+                'fr': ['CDG', 'ORY'],
+            }
+            origin_candidates = [origin]
+            if country:
+                hubs = country_hubs.get(str(country).lower())
+                if hubs:
+                    origin_candidates.extend(hubs)
+            origin_candidates = unique(origin_candidates)[:6]
+
+            # Try combinations in order (with small date offsets to increase hit rate)
+            last_result: Dict[str, Any] = {}
+            from datetime import datetime, timedelta
+            try:
+                base_dt = datetime.strptime(departure_date, "%Y-%m-%d")
+            except Exception:
+                base_dt = datetime.utcnow() + timedelta(days=14)
+            date_offsets = [0, 1, -1, 2, -2]
+            for o in origin_candidates:
+                for d in dest_candidates:
+                    for off in date_offsets:
+                        dep_try = (base_dt + timedelta(days=off)).strftime("%Y-%m-%d")
+                        direct_results = self.flight_search.search_flights(
+                            origin=o,
+                            destination=d,
+                            departure_date=dep_try,
+                            return_date=return_date,
+                            adults=adults,
+                            cabin_class=cabin_class,
+                            country=country,
+                        )
+                        last_result = direct_results
+                        flights = direct_results.get("flights", []) if isinstance(direct_results, dict) else []
+                        if flights:
+                            analysis = self._analyze_flights_simple(flights)
+                            return {
+                                "success": True,
+                                "data": {
+                                    "flights": flights,
+                                    "recommendations": analysis.get("recommendations"),
+                                    "total_flights": analysis.get("total_flights"),
+                                    "price_range": analysis.get("price_range"),
+                                    "summary": analysis.get("summary"),
+                                    "data_source": direct_results.get("data_source", "serpapi"),
+                                },
+                                "raw_response": None,
+                            }
 
             # Retry deterministically with arrival_id candidates derived from destination string
             for cand in self._destination_candidates(destination)[:6]:
@@ -513,7 +600,7 @@ Always return your responses in a structured JSON format that can be easily pars
                     "total_flights": 0,
                     "price_range": {"lowest": 0, "highest": 0},
                     "summary": "No flights found for the given criteria.",
-                    "data_source": direct_results.get("data_source", "serpapi"),
+                    "data_source": (last_result.get("data_source", "serpapi") if isinstance(last_result, dict) else "serpapi"),
                 },
                 "raw_response": None,
             }

@@ -30,6 +30,22 @@ const TransportResults: React.FC<TransportResultsProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Rehydrate cache for current destination
+  React.useEffect(() => {
+    try {
+      const planningRaw = localStorage.getItem('tripPlanningData');
+      if (!planningRaw) return;
+      const planning = JSON.parse(planningRaw);
+      const dest = planning.cityHint || planning.destination;
+      const cacheRaw = localStorage.getItem('places_cache_transport');
+      if (!cacheRaw) return;
+      const cache = JSON.parse(cacheRaw);
+      if (cache && cache.destination === dest && Array.isArray(cache.items)) {
+        setItems(cache.items);
+      }
+    } catch {}
+  }, []);
+
   const transportOptions: Transport[] = [
     {
       id: 't1',
@@ -132,11 +148,14 @@ const TransportResults: React.FC<TransportResultsProps> = ({
       if (!raw) throw new Error('Missing trip planning data');
       const planning = JSON.parse(raw);
       let destination = planning.cityHint || planning.destination;
-      let res = await placesService.transport({ destination, limit: 24, radius_meters: 20000 });
+      let res = await placesService.transport({ destination, limit: 24, radius_meters: 5000 });
       if (!res.success || !res.data || !res.data.items) {
         throw new Error('No transport options found');
       }
       setItems(res.data.items);
+      try {
+        localStorage.setItem('places_cache_transport', JSON.stringify({ destination, items: res.data.items }));
+      } catch {}
     } catch (e: any) {
       // Retry with simplified city token
       try {
@@ -146,10 +165,13 @@ const TransportResults: React.FC<TransportResultsProps> = ({
         const destRaw = planning.destination || '';
         const simpleCity = String(destRaw).split(',')[0].trim();
         if (!simpleCity) throw e;
-        const res2 = await placesService.transport({ destination: simpleCity, limit: 24, radius_meters: 20000 });
+        const res2 = await placesService.transport({ destination: simpleCity, limit: 24, radius_meters: 5000 });
         if (res2.success && res2.data && res2.data.items) {
           setItems(res2.data.items);
           setError(null);
+          try {
+            localStorage.setItem('places_cache_transport', JSON.stringify({ destination: simpleCity, items: res2.data.items }));
+          } catch {}
         } else {
           setError(e.message || 'Failed to load transport options');
         }

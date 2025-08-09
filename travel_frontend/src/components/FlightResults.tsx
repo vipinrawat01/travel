@@ -27,6 +27,7 @@ const FlightResults: React.FC<FlightResultsProps> = ({ onFlightSelect, selectedF
     if (tripPlanningData) {
       try {
         const data = JSON.parse(tripPlanningData);
+        console.log('[Flights] tripPlanningData loaded:', data);
         const destQuery = data.cityHint || data.destination;
         setDestinationQuery(destQuery);
         const params: FlightSearchParams = {
@@ -42,11 +43,23 @@ const FlightResults: React.FC<FlightResultsProps> = ({ onFlightSelect, selectedF
             preferred_airlines: []
           }
         };
+        console.log('[Flights] initial searchParams:', params);
         setSearchParams(params);
       } catch (e) {
         console.error('Error parsing trip planning data:', e);
       }
     }
+  }, []);
+
+  // Load cached generated flights so list persists across tab switches
+  useEffect(() => {
+    try {
+      const cached = localStorage.getItem('flights_cache_results');
+      if (cached) {
+        const arr = JSON.parse(cached);
+        if (Array.isArray(arr) && arr.length > 0) setFlights(arr);
+      }
+    } catch {}
   }, []);
 
   // Preload previously selected flight from backend so it persists between visits
@@ -88,7 +101,22 @@ const FlightResults: React.FC<FlightResultsProps> = ({ onFlightSelect, selectedF
     setError(null);
 
       try {
-      console.log('Searching flights with AI agent...', searchParams);
+      console.log('[Flights] Generate clicked. Current searchParams:', searchParams);
+        // Ensure dates exist and are plausible
+        let depDate = searchParams.departure_date;
+        let retDate = searchParams.return_date;
+        try {
+          const today = new Date();
+          if (!depDate || isNaN(new Date(depDate).getTime())) {
+            const d = new Date(); d.setDate(today.getDate() + 14);
+            depDate = d.toISOString().slice(0, 10);
+          }
+          if (retDate && new Date(retDate) < new Date(depDate)) {
+            const r = new Date(depDate as string); r.setDate(r.getDate() + 5);
+            retDate = r.toISOString().slice(0, 10);
+          }
+        } catch {}
+        console.log('[Flights] normalized dates:', { depDate, retDate });
         // Resolve destination to IATA/city code when possible
         const resolveDestinationCode = async (q: string): Promise<string> => {
           try {
@@ -99,6 +127,7 @@ const FlightResults: React.FC<FlightResultsProps> = ({ onFlightSelect, selectedF
               const exactCity = suggestions.find(s => s.city && s.city.toLowerCase() === lowerQ);
               const containsCity = suggestions.find(s => s.city && s.city.toLowerCase().includes(lowerQ));
               const pick = exactCity || containsCity || suggestions[0];
+              console.log('[Flights] airport suggestions:', suggestions, 'picked:', pick);
               return pick.code || pick.city || q;
             }
           } catch {}
@@ -107,7 +136,12 @@ const FlightResults: React.FC<FlightResultsProps> = ({ onFlightSelect, selectedF
 
         const destQ = destinationQuery || searchParams.destination;
         const isLikelyCode = typeof destQ === 'string' && /^[A-Za-z]{3}$/.test(destQ.trim());
-        const finalDestination = (isLikelyCode ? destQ.trim().toUpperCase() : await resolveDestinationCode(destQ));
+        // Prefer city-group code for Tokyo and similar cases
+        let finalDestination = (isLikelyCode ? destQ.trim().toUpperCase() : await resolveDestinationCode(destQ));
+        if (!isLikelyCode && typeof destQ === 'string' && destQ.toLowerCase().includes('tokyo')) {
+          finalDestination = 'TYO';
+        }
+        console.log('[Flights] destQ:', destQ, 'finalDestination:', finalDestination);
         setDestCode(finalDestination);
         // Determine user country & infer origin via public IP service (fallbacks applied)
         const { userCountry, userCountryName } = await (async () => {
@@ -140,6 +174,7 @@ const FlightResults: React.FC<FlightResultsProps> = ({ onFlightSelect, selectedF
         const inferredOrigin = countryToHub[userCountry] || 'JFK';
         setOriginCode(inferredOrigin);
         if (userCountryName) setOriginCountryName(userCountryName);
+        console.log('[Flights] inferred origin/country:', { inferredOrigin, userCountry, userCountryName });
 
         // Update visible search parameters so the header shows correct route
         setSearchParams(prev => prev ? {
@@ -152,22 +187,55 @@ const FlightResults: React.FC<FlightResultsProps> = ({ onFlightSelect, selectedF
           ...searchParams,
           origin: inferredOrigin,
           destination: finalDestination,
+          departure_date: depDate as string,
+          return_date: retDate as string | undefined,
           country: userCountry,
         });
+        console.log('[Flights] primary response:', response);
       
       if (response.success) {
         const extractedFlights = flightService.extractFlightsFromResponse(response);
         const extractedRecommendations = flightService.getRecommendations(response);
 
         setFlights(extractedFlights);
+        try {
+          localStorage.setItem('flights_cache_results', JSON.stringify(extractedFlights));
+        } catch {}
         setRecommendations(extractedRecommendations);
         
         console.log('AI Flight search results:', response);
         console.log('Extracted flights:', extractedFlights);
         console.log('Recommendations:', extractedRecommendations);
           if (extractedFlights.length === 0) {
-            const msg = flightService.getMessageFromResponse(response);
-            if (msg) setError(msg);
+            // Retry without localization constraints and raw destination
+            try {
+              const rawDest = destinationQuery || searchParams.destination;
+              const retryResp = await flightService.searchFlights({
+                ...searchParams,
+                origin: inferredOrigin,
+                destination: rawDest,
+                departure_date: depDate as string,
+                return_date: retDate as string | undefined,
+                country: undefined,
+              });
+              console.log('[Flights] retryResp:', retryResp);
+              if (retryResp.success) {
+                const retryFlights = flightService.extractFlightsFromResponse(retryResp);
+                if (retryFlights.length > 0) {
+                  setFlights(retryFlights);
+                  try { localStorage.setItem('flights_cache_results', JSON.stringify(retryFlights)); } catch {}
+                  setError(null);
+                } else {
+                  const msg = flightService.getMessageFromResponse(retryResp) || 'No flights found for the given criteria.';
+                  setError(msg);
+                }
+              } else {
+                setError(retryResp.error || 'No flights found for the given criteria.');
+              }
+            } catch (e: any) {
+              console.log('[Flights] retry error:', e);
+              setError(e?.message || 'No flights found for the given criteria.');
+            }
           }
       } else {
         setError(response.error || 'Failed to search flights');
