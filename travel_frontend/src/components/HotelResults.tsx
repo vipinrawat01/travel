@@ -86,7 +86,8 @@ const HotelResults: React.FC<HotelResultsProps> = ({ onHotelSelect, selectedHote
       let destination = 'Tokyo';
       let startDate = '2025-08-01';
       let endDate = '2025-08-05';
-      let budget: number | undefined = undefined;
+      let budgetTotal: number | undefined = undefined;
+      let travelers = 1;
 
       if (planningRaw && planningRaw !== 'null' && planningRaw !== 'undefined') {
         try {
@@ -95,16 +96,49 @@ const HotelResults: React.FC<HotelResultsProps> = ({ onHotelSelect, selectedHote
           startDate = planning.startDate || planning.start_date || startDate;
           endDate = planning.endDate || planning.end_date || endDate;
           const b = planning.budget || planning.totalBudget || planning.total_budget;
-          if (b) budget = Number(b);
+          if (b) budgetTotal = Number(b);
+          const t = planning.travelers || planning.numTravelers || planning.num_travelers;
+          if (t) travelers = parseInt(String(t)) || 1;
         } catch {}
       }
+
+      // Compute nights and a per-night budget per room/person heuristic
+      const nights = (() => {
+        try {
+          const sd = new Date(startDate);
+          const ed = new Date(endDate);
+          const ms = ed.getTime() - sd.getTime();
+          const d = Math.ceil(ms / (1000 * 60 * 60 * 24));
+          return isNaN(d) ? 1 : Math.max(d, 1);
+        } catch { return 1; }
+      })();
+
+      let budgetPerNight: number | undefined = undefined;
+      if (budgetTotal && budgetTotal > 0) {
+        budgetPerNight = Math.floor(budgetTotal / Math.max(travelers, 1) / Math.max(nights, 1));
+        // If unrealistically low, don't filter out results
+        if (budgetPerNight < 30) budgetPerNight = undefined;
+      }
+
+      // Determine user country for localization
+      const userCountry = await (async () => {
+        try {
+          const r = await fetch('https://ipapi.co/json/');
+          if (r.ok) {
+            const j = await r.json();
+            return (j && j.country_code) ? String(j.country_code).toLowerCase() : undefined;
+          }
+        } catch {}
+        return undefined;
+      })();
 
       const resp = await hotelService.searchHotels({
         destination,
         check_in_date: startDate,
         check_out_date: endDate,
-        adults: 1,
-        budget_max: budget,
+        adults: travelers,
+        budget_max: budgetPerNight,
+        country: userCountry,
       });
 
       const fetched: HotelItem[] = hotelService.extractHotelsFromResponse(resp);

@@ -167,6 +167,16 @@ if _extra_cors:
 else:
     CORS_ALLOWED_ORIGINS = _default_cors
 
+# Optional: allow all origins via env toggle (for debugging)
+CORS_ALLOW_ALL_ORIGINS = config('CORS_ALLOW_ALL_ORIGINS', default=False, cast=bool)
+
+# Optional: regex support (helpful for Vercel preview URLs)
+_regex_env = config('CORS_ALLOWED_ORIGIN_REGEXES', default='', cast=str)
+_regexes = [r"^https://.*\\.vercel\\.app$"]  # include Vercel previews by default
+if _regex_env:
+    _regexes.extend([r.strip() for r in _regex_env.split(',') if r.strip()])
+CORS_ALLOWED_ORIGIN_REGEXES = _regexes
+
 CORS_ALLOW_CREDENTIALS = True
 
 CORS_ALLOW_METHODS = [

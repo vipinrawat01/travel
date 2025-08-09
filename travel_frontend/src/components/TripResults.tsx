@@ -30,6 +30,8 @@ const TripResults: React.FC<TripResultsProps> = ({ onBack }) => {
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [isSavingFlight, setIsSavingFlight] = useState(false);
+  const [saveFlightMsg, setSaveFlightMsg] = useState<string | null>(null);
 
   // Load existing trip data on component mount
   useEffect(() => {
@@ -88,6 +90,29 @@ const TripResults: React.FC<TripResultsProps> = ({ onBack }) => {
       const pendingSelections = JSON.parse(localStorage.getItem('pendingSelections') || '{}');
       pendingSelections.flight = flight;
       localStorage.setItem('pendingSelections', JSON.stringify(pendingSelections));
+    }
+  };
+
+  const handleSaveSelectedFlight = async () => {
+    try {
+      setSaveFlightMsg(null);
+      setIsSavingFlight(true);
+      const currentTripId = localStorage.getItem('currentTripId');
+      if (!currentTripId || !selectedFlight) {
+        setSaveFlightMsg('No trip or flight selected');
+        return;
+      }
+      await tripService.updatePlanningStage(currentTripId, 'flight', {
+        status: 'completed',
+        selected_items: [selectedFlight],
+        notes: `Selected flight: ${selectedFlight.airline || selectedFlight.name}`,
+      });
+      setSaveFlightMsg('Flight saved');
+    } catch (e) {
+      setSaveFlightMsg('Failed to save flight');
+    } finally {
+      setIsSavingFlight(false);
+      setTimeout(() => setSaveFlightMsg(null), 2500);
     }
   };
 
@@ -392,7 +417,14 @@ const TripResults: React.FC<TripResultsProps> = ({ onBack }) => {
               selectedFlight={selectedFlight}
             />
             {selectedFlight && (
-              <div className="text-center">
+              <div className="flex items-center justify-center gap-3">
+                <Button
+                  onClick={handleSaveSelectedFlight}
+                  variant="secondary"
+                  disabled={isSavingFlight}
+                >
+                  {isSavingFlight ? 'Saving…' : 'Save Flight'}
+                </Button>
                 <Button
                   onClick={() => setCurrentTab('hotels')}
                   className="ai-button-primary"
@@ -401,6 +433,9 @@ const TripResults: React.FC<TripResultsProps> = ({ onBack }) => {
                   <Sparkles className="w-4 h-4 ml-2" />
                 </Button>
               </div>
+            )}
+            {saveFlightMsg && (
+              <div className="text-center text-sm text-foreground-muted">{saveFlightMsg}</div>
             )}
           </TabsContent>
 

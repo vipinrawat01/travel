@@ -14,6 +14,7 @@ export interface FlightSearchParams {
     max_stops?: number;
     preferred_airlines?: string[];
   };
+  country?: string; // ISO-2 country code used to localize results (SerpAPI gl)
 }
 
 export interface Flight {
@@ -29,6 +30,7 @@ export interface Flight {
   type?: string;
   layovers?: any[];
   raw_data?: any;
+  bookingUrl?: string;
 }
 
 export interface FlightSearchResponse {

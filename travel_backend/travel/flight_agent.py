@@ -26,6 +26,7 @@ class FlightSearchTool:
         return_date: Optional[str] = None,
         adults: int = 1,
         cabin_class: str = "economy",
+        country: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Search for flights using SerpAPI Google Flights
@@ -41,10 +42,19 @@ class FlightSearchTool:
         Returns:
             Dictionary containing flight search results
         """
-        return self._search_serpapi(origin, destination, departure_date, return_date, adults, cabin_class)
+        return self._search_serpapi(
+            origin,
+            destination,
+            departure_date,
+            return_date,
+            adults,
+            cabin_class,
+            country,
+        )
     
     def _search_serpapi(self, origin: str, destination: str, departure_date: str, 
-                        return_date: Optional[str] = None, adults: int = 1, cabin_class: str = "economy") -> Dict[str, Any]:
+                        return_date: Optional[str] = None, adults: int = 1, cabin_class: str = "economy",
+                        country: Optional[str] = None) -> Dict[str, Any]:
         """Search flights using SerpAPI Google Flights as fallback"""
         try:
             search_params = {
@@ -63,6 +73,10 @@ class FlightSearchTool:
             
             if cabin_class != "economy":
                 search_params["cabin_class"] = cabin_class
+
+            # Country / geolocation: SerpAPI supports 'gl' (country) to localize results
+            if country and isinstance(country, str) and len(country) == 2:
+                search_params["gl"] = country.lower()
             
             search = GoogleSearch(search_params)
             results = search.get_dict()
@@ -134,21 +148,41 @@ class FlightSearchTool:
             airline = first_flight.get("airline", "Unknown")
             price = flight_option.get("price", 0)
             
-            departure_time = first_flight.get("departure_airport", {}).get("time", "")
-            arrival_time = last_flight.get("arrival_airport", {}).get("time", "")
+            departure_info = first_flight.get("departure_airport", {})
+            arrival_info = last_flight.get("arrival_airport", {})
+            departure_time = departure_info.get("time", "")
+            arrival_time = arrival_info.get("time", "")
+
+            dep_code = departure_info.get("id", "")
+            arr_code = arrival_info.get("id", "")
+            dep_date = ""
+            try:
+                if departure_time:
+                    dep_date = departure_time.split(" ")[0]
+            except Exception:
+                dep_date = ""
+
+            # Construct a Google Flights booking/search URL
+            booking_url = None
+            if dep_code and arr_code and dep_date:
+                # Generic query link that opens Google Flights with the route/date
+                booking_url = (
+                    f"https://www.google.com/travel/flights?hl=en&q={dep_code}%20to%20{arr_code}%20{dep_date}"
+                )
             
             return {
                 "id": f"flight_{len(flights)}_{airline}_{price}",
                 "airline": airline,
                 "price": price,
-                "departure": first_flight.get("departure_airport", {}).get("id", ""),
-                "arrival": last_flight.get("arrival_airport", {}).get("id", ""),
+                "departure": dep_code,
+                "arrival": arr_code,
                 "duration": f"{duration_hours}h {duration_minutes}m",
                 "stops": stops,
                 "departureTime": departure_time,
                 "arrivalTime": arrival_time,
                 "type": flight_option.get("type", "Round-trip"),
                 "layovers": layovers,
+                "bookingUrl": booking_url,
                 "raw_data": flight_option
             }
             
@@ -330,7 +364,8 @@ Always return your responses in a structured JSON format that can be easily pars
                                          return_date: Optional[str] = None,
                                          adults: int = 1,
                                          cabin_class: str = "economy",
-                                         preferences: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                                          preferences: Optional[Dict[str, Any]] = None,
+                                          country: Optional[str] = None) -> Dict[str, Any]:
         """
         Search for flights and provide AI-powered recommendations using hybrid API approach
         
@@ -371,6 +406,7 @@ Always return your responses in a structured JSON format that can be easily pars
                 return_date=return_date,
                 adults=adults,
                 cabin_class=cabin_class,
+                country=country,
             )
 
             flights = direct_results.get("flights", []) if isinstance(direct_results, dict) else []

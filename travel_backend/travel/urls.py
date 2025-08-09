@@ -48,4 +48,7 @@ urlpatterns = [
 
     # Hotel search endpoints
     path('hotels/search/', views.search_hotels_ai, name='search_hotels_ai'),
+
+    # Events (Ticketmaster) endpoints
+    path('events/search/', views.search_events, name='search_events'),
 ]

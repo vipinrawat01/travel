@@ -15,6 +15,8 @@ from .serializers import (
     TripPlanningStageCreateSerializer, TripPlanningStageUpdateSerializer,
     LiveItineraryItemSerializer, LiveItineraryItemCreateSerializer, LiveItineraryItemUpdateSerializer
 )
+import os
+import requests
 
 # Authentication Views
 @api_view(['POST'])
@@ -533,6 +535,7 @@ def search_flights_ai(request):
         adults = data.get('adults', 1)
         cabin_class = data.get('cabin_class', 'economy')
         preferences = data.get('preferences', {})
+        country = data.get('country')  # Optional 2-letter country code, e.g., 'US'
         
         # Validate required fields
         if not all([origin, destination, departure_date]):
@@ -559,7 +562,8 @@ def search_flights_ai(request):
                 return_date=return_date,
                 adults=adults,
                 cabin_class=cabin_class,
-                preferences=preferences
+                preferences=preferences,
+                country=country
             )
         
         # Execute the async function
@@ -690,3 +694,116 @@ def search_hotels_ai(request):
         return Response(result, status=status_code)
     except Exception as e:
         return Response({'success': False, 'error': f'Failed to search hotels: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def search_events(request):
+    """Search events using Ticketmaster Discovery API based on destination and dates.
+    Query params: destination, start_date, end_date, countryCode? (ISO-2), size?, page?
+    """
+    try:
+        # Accept multiple env var names for convenience
+        apikey = (
+            os.getenv('TICKETMASTER_API_KEY')
+            or os.getenv('TICKETMASTER_CONSUMER_KEY')
+            or os.getenv('TICKETMASTER_APIKEY')
+            or os.getenv('TM_API_KEY')
+            or os.getenv('CONSUMER_KEY')
+        )
+        if not apikey:
+            return Response({'success': False, 'error': 'Ticketmaster API key not configured'}, status=500)
+
+        destination = request.GET.get('destination')
+        start_date = request.GET.get('start_date')  # YYYY-MM-DD
+        end_date = request.GET.get('end_date')      # YYYY-MM-DD
+        country_code = request.GET.get('countryCode')  # optional ISO 2
+        size = request.GET.get('size', '20')
+        page = request.GET.get('page', '0')
+
+        if not destination or not start_date or not end_date:
+            return Response({'success': False, 'error': 'destination, start_date, end_date are required'}, status=400)
+
+        # Ticketmaster expects ISO8601 date-times. Use full-day ranges.
+        start_iso = f"{start_date}T00:00:00Z"
+        end_iso = f"{end_date}T23:59:59Z"
+
+        # Prefer city name only for keyword to improve matching
+        city_keyword = destination
+        try:
+            parts = [p.strip() for p in str(destination).split(',') if p.strip()]
+            if parts:
+                city_keyword = parts[0]
+        except Exception:
+            city_keyword = destination
+
+        params = {
+            'apikey': 'spGaDcjhCt7F4dORB1e5xiHs1KaGLGGB',
+            'keyword': city_keyword,
+            'startDateTime': start_iso,
+            'endDateTime': end_iso,
+            'size': size,
+            'page': page,
+            'sort': 'date,asc',
+        }
+        if country_code:
+            cc = country_code.strip().upper()
+            # Normalize some common variants
+            if cc == 'UK':
+                cc = 'GB'
+            if len(cc) == 2 and cc.isalpha():
+                params['countryCode'] = cc
+
+        url = 'https://app.ticketmaster.com/discovery/v2/events.json'
+        r = requests.get(url, params=params, timeout=20)
+        try:
+            r.raise_for_status()
+        except requests.HTTPError as http_err:
+            return Response({'success': False, 'error': f'Ticketmaster HTTP error: {r.status_code} {r.text[:300]}'}, status=502)
+
+        try:
+            data = r.json()
+        except ValueError:
+            return Response({'success': False, 'error': f'Invalid JSON from Ticketmaster: {r.text[:300]}'}, status=502)
+
+        events = []
+        embedded = data.get('_embedded', {})
+        for ev in embedded.get('events', []):
+            name = ev.get('name')
+            id_ = ev.get('id')
+            dates = ev.get('dates', {})
+            start = dates.get('start', {})
+            local_date = start.get('localDate')
+            local_time = start.get('localTime')
+            url_tm = ev.get('url')
+            price = None
+            if 'priceRanges' in ev and isinstance(ev['priceRanges'], list) and ev['priceRanges']:
+                pr = ev['priceRanges'][0]
+                price = pr.get('min')
+            venue_name = None
+            city = None
+            if '_embedded' in ev and 'venues' in ev['_embedded'] and ev['_embedded']['venues']:
+                v = ev['_embedded']['venues'][0]
+                venue_name = v.get('name')
+                city = (v.get('city') or {}).get('name')
+
+            image = None
+            if 'images' in ev and isinstance(ev['images'], list) and ev['images']:
+                image = ev['images'][0].get('url')
+
+            events.append({
+                'id': id_,
+                'name': name,
+                'date': local_date,
+                'time': local_time,
+                'location': f"{venue_name or ''}{' • ' if venue_name and city else ''}{city or ''}",
+                'price': price or 0,
+                'url': url_tm,
+                'image': image,
+            })
+
+        return Response({'success': True, 'data': {'events': events, 'total': len(events)}})
+    except requests.HTTPError as e:
+        return Response({'success': False, 'error': f'Ticketmaster HTTP error: {str(e)}'}, status=502)
+    except Exception as e:
+        return Response({'success': False, 'error': f'Failed to search events: {str(e)}'}, status=500)

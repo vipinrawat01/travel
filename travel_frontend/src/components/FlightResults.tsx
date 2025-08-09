@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Plane, Clock, DollarSign, Calendar, ArrowRight, Sparkles, Loader2, Search, MapPin } from 'lucide-react';
+import { Plane, Clock, DollarSign, Calendar, ArrowRight, Sparkles, Loader2, Search, MapPin, ExternalLink } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { flightService, Flight, FlightSearchParams } from '../services/flightService';
+import { tripService } from '@/services/tripService';
 
 interface FlightResultsProps {
   onFlightSelect: (flight: Flight) => void;
@@ -15,7 +16,10 @@ const FlightResults: React.FC<FlightResultsProps> = ({ onFlightSelect, selectedF
   const [searchParams, setSearchParams] = useState<FlightSearchParams | null>(null);
   const [recommendations, setRecommendations] = useState<any>(null);
   const [destinationQuery, setDestinationQuery] = useState<string | null>(null);
-  const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
+  // Removed AI analysis display per requirement
+  const [originCode, setOriginCode] = useState<string | null>(null);
+  const [destCode, setDestCode] = useState<string | null>(null);
+  const [originCountryName, setOriginCountryName] = useState<string | null>(null);
 
   // Get trip planning data from localStorage
   useEffect(() => {
@@ -26,7 +30,7 @@ const FlightResults: React.FC<FlightResultsProps> = ({ onFlightSelect, selectedF
         const destQuery = data.cityHint || data.destination;
         setDestinationQuery(destQuery);
         const params: FlightSearchParams = {
-          origin: 'NYC', // Default origin - could be made dynamic based on user location
+          origin: '', // will be resolved dynamically below
           destination: destQuery,
           departure_date: data.startDate,
           return_date: data.endDate,
@@ -43,6 +47,35 @@ const FlightResults: React.FC<FlightResultsProps> = ({ onFlightSelect, selectedF
         console.error('Error parsing trip planning data:', e);
       }
     }
+  }, []);
+
+  // Preload previously selected flight from backend so it persists between visits
+  useEffect(() => {
+    const preload = async () => {
+      try {
+        const tripId = localStorage.getItem('currentTripId');
+        if (!tripId) return;
+        const stages = await tripService.getTripPlanningStages(tripId);
+        const flightStage = Array.isArray(stages)
+          ? stages.find((s: any) => s.stage_type === 'flight' && Array.isArray(s.selected_items) && s.selected_items.length > 0)
+          : null;
+        if (flightStage) {
+          const prevFlight = flightStage.selected_items[0];
+          // Set as selected in parent via callback
+          onFlightSelect(prevFlight);
+          // Ensure it renders immediately even before Generate
+          setFlights((cur) => {
+            // Deduplicate by id if exists
+            const exists = cur.some((f) => (f as any).id === prevFlight.id);
+            return exists ? cur : [prevFlight, ...cur];
+          });
+        }
+      } catch {
+        // ignore preload errors
+      }
+    };
+    preload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleGenerate = async () => {
@@ -74,20 +107,60 @@ const FlightResults: React.FC<FlightResultsProps> = ({ onFlightSelect, selectedF
 
         const destQ = destinationQuery || searchParams.destination;
         const isLikelyCode = typeof destQ === 'string' && /^[A-Za-z]{3}$/.test(destQ.trim());
-        const finalDestination = isLikelyCode ? destQ.trim().toUpperCase() : await resolveDestinationCode(destQ);
+        const finalDestination = (isLikelyCode ? destQ.trim().toUpperCase() : await resolveDestinationCode(destQ));
+        setDestCode(finalDestination);
+        // Determine user country & infer origin via public IP service (fallbacks applied)
+        const { userCountry, userCountryName } = await (async () => {
+          try {
+            const r = await fetch('https://ipapi.co/json/');
+            if (r.ok) {
+              const j = await r.json();
+              const c = (j && j.country_code) ? String(j.country_code).toLowerCase() : 'us';
+              const cn = (j && j.country_name) ? String(j.country_name) : null;
+              return { userCountry: c, userCountryName: cn };
+            }
+          } catch {}
+          return { userCountry: 'us', userCountryName: null };
+        })();
 
-        const response = await flightService.searchFlights({ ...searchParams, destination: finalDestination });
+        // Infer a reasonable origin airport code based on user country (simple heuristic)
+        const countryToHub: Record<string, string> = {
+          us: 'JFK',
+          ca: 'YYZ',
+          gb: 'LHR',
+          uk: 'LHR',
+          in: 'DEL',
+          ae: 'DXB',
+          sg: 'SIN',
+          au: 'SYD',
+          de: 'FRA',
+          fr: 'CDG',
+          jp: 'NRT',
+        };
+        const inferredOrigin = countryToHub[userCountry] || 'JFK';
+        setOriginCode(inferredOrigin);
+        if (userCountryName) setOriginCountryName(userCountryName);
+
+        // Update visible search parameters so the header shows correct route
+        setSearchParams(prev => prev ? {
+          ...prev,
+          origin: inferredOrigin,
+          destination: finalDestination,
+        } : null);
+
+        const response = await flightService.searchFlights({
+          ...searchParams,
+          origin: inferredOrigin,
+          destination: finalDestination,
+          country: userCountry,
+        });
       
       if (response.success) {
         const extractedFlights = flightService.extractFlightsFromResponse(response);
         const extractedRecommendations = flightService.getRecommendations(response);
-        
+
         setFlights(extractedFlights);
         setRecommendations(extractedRecommendations);
-          // Capture AI analysis text if available
-          const summary = (response.data && (response.data as any).summary) as string | undefined;
-          const analysis = summary || response.raw_response || null;
-          setAiAnalysis(analysis || null);
         
         console.log('AI Flight search results:', response);
         console.log('Extracted flights:', extractedFlights);
@@ -157,7 +230,11 @@ const FlightResults: React.FC<FlightResultsProps> = ({ onFlightSelect, selectedF
           <div className="flex items-center space-x-4 text-sm">
             <div className="flex items-center space-x-2">
               <MapPin className="w-4 h-4 text-ai-secondary" />
-              <span>{searchParams.origin} → {searchParams.destination}</span>
+              <span>
+                {(originCountryName ? `${originCountryName} (${searchParams.origin || originCode || ''})` : (searchParams.origin || originCode || ''))}
+                {' '}→{' '}
+                {searchParams.destination || destCode || ''}
+              </span>
             </div>
             <div className="flex items-center space-x-2">
               <Calendar className="w-4 h-4 text-ai-tertiary" />
@@ -237,19 +314,26 @@ const FlightResults: React.FC<FlightResultsProps> = ({ onFlightSelect, selectedF
                   <span className="text-foreground-muted">{flight.arrival}</span>
                 </div>
               </div>
+
+              {('bookingUrl' in flight) && (flight as any).bookingUrl && (
+                <div className="mt-4 flex justify-end">
+                  <a
+                    href={(flight as any).bookingUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center text-sm ai-link"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    Book on Google <ExternalLink className="w-4 h-4 ml-1" />
+                  </a>
+                </div>
+              )}
                 </div>
           ))}
-        {/* AI Analysis */}
-        {aiAnalysis && (
-          <div className="glass-card p-6">
-            <h3 className="text-lg font-semibold mb-2">AI Analysis</h3>
-            <div className="text-sm whitespace-pre-wrap text-foreground-muted">{aiAnalysis}</div>
-          </div>
-        )}
       </div>
       )}
 
-      {/* Empty State with AI Analysis if present */}
+      {/* Empty State */}
       {!isLoading && flights.length === 0 && !error && (
         <div className="glass-card p-12 text-center">
           <Search className="w-16 h-16 text-foreground-muted mx-auto mb-4" />
@@ -267,14 +351,6 @@ const FlightResults: React.FC<FlightResultsProps> = ({ onFlightSelect, selectedF
             <Sparkles className="w-4 h-4 mr-2" />
             Generate with AI
           </Button>
-          {aiAnalysis && (
-            <div className="mt-6 text-left">
-              <h4 className="font-semibold mb-2">AI Analysis</h4>
-              <div className="text-sm whitespace-pre-wrap text-foreground-muted max-h-64 overflow-auto glass-card-secondary p-4">
-                {aiAnalysis}
-              </div>
-            </div>
-          )}
               </div>
             )}
     </div>

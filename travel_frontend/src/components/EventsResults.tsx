@@ -1,6 +1,8 @@
 
-import React from 'react';
-import { Calendar, Music, Trophy, Star, MapPin, Clock } from 'lucide-react';
+import React, { useState } from 'react';
+import { Calendar, Music, Trophy, Star, MapPin, Clock, Sparkles, ExternalLink } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { eventsService } from '@/services/eventsService';
 
 interface Event {
   id: string;
@@ -15,52 +17,53 @@ interface Event {
 }
 
 const EventsResults: React.FC = () => {
-  const events: Event[] = [
-    {
-      id: 'e1',
-      name: 'Tokyo Winter Illumination Festival',
-      type: 'festival',
-      date: 'Dec 15 - Jan 15',
-      time: '17:00 - 22:00',
-      location: 'Roppongi Hills',
-      price: 0,
-      description: 'Spectacular winter light displays across the city',
-      popularity: 4.8
-    },
-    {
-      id: 'e2',
-      name: 'J-League Championship Final',
-      type: 'sports',
-      date: 'Dec 18',
-      time: '19:00',
-      location: 'Tokyo Stadium',
-      price: 45,
-      description: 'Final match of Japan\'s premier football league',
-      popularity: 4.5
-    },
-    {
-      id: 'e3',
-      name: 'Tokyo Jazz Festival',
-      type: 'concert',
-      date: 'Dec 20-22',
-      time: '19:30',
-      location: 'Blue Note Tokyo',
-      price: 85,
-      description: 'International jazz artists performing live',
-      popularity: 4.7
-    },
-    {
-      id: 'e4',
-      name: 'Digital Art Exhibition',
-      type: 'exhibition',
-      date: 'Ongoing',
-      time: '10:00 - 20:00',
-      location: 'teamLab Borderless',
-      price: 35,
-      description: 'Immersive digital art and interactive installations',
-      popularity: 4.9
+  const [events, setEvents] = useState<Event[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleGenerate = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      const planningRaw = localStorage.getItem('tripPlanningData');
+      if (!planningRaw) throw new Error('Plan trip first to fetch events');
+      const planning = JSON.parse(planningRaw);
+      const destination = planning.destination;
+      const startDate = planning.startDate || planning.start_date;
+      const endDate = planning.endDate || planning.end_date;
+      if (!destination || !startDate || !endDate) throw new Error('Missing destination or dates');
+
+      // Use destination country if present, else omit
+      let countryCode: string | undefined = undefined;
+      try {
+        const destStr: string = String(destination);
+        const parts = destStr.split(',').map((p) => p.trim());
+        const last = parts[parts.length - 1];
+        if (/^[A-Za-z]{2}$/.test(last)) countryCode = last.toUpperCase();
+      } catch {}
+
+      const resp = await eventsService.searchEvents({ destination, start_date: startDate, end_date: endDate, countryCode, size: 20, page: 0 });
+      const data = resp.data || resp;
+      const items = (data.events || []).map((e: any) => ({
+        id: e.id,
+        name: e.name,
+        type: 'concert',
+        date: e.date,
+        time: e.time,
+        location: e.location,
+        price: e.price || 0,
+        description: e.name,
+        popularity: 4.5,
+        url: e.url,
+      }));
+      setEvents(items);
+      if (items.length === 0) setError('No events found for these dates and destination.');
+    } catch (e: any) {
+      setError(e?.message || 'Failed to fetch events');
+    } finally {
+      setLoading(false);
     }
-  ];
+  };
 
   const getEventIcon = (type: string) => {
     switch (type) {
@@ -90,6 +93,17 @@ const EventsResults: React.FC = () => {
       </div>
 
       <div className="space-y-4">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center space-x-3">
+            <Music className="w-6 h-6 text-ai-primary" />
+            <h2 className="text-2xl font-semibold text-ai-accent">Local Events</h2>
+          </div>
+          <Button onClick={handleGenerate} className="ai-button-primary">
+            <Sparkles className="w-4 h-4 mr-2" /> Generate
+          </Button>
+        </div>
+        {loading && <div className="text-sm text-foreground-muted">Searching events...</div>}
+        {error && <div className="text-sm text-red-500">{error}</div>}
         {events.map((event, index) => {
           const EventIcon = getEventIcon(event.type);
           
@@ -143,6 +157,13 @@ const EventsResults: React.FC = () => {
                       <span className="text-foreground-muted">{event.location}</span>
                     </div>
                   </div>
+                  {event.url && (
+                    <div className="mt-3">
+                      <a href={event.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center text-sm ai-link">
+                        View Details <ExternalLink className="w-4 h-4 ml-1" />
+                      </a>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
