@@ -51,4 +51,9 @@ urlpatterns = [
 
     # Events (Ticketmaster) endpoints
     path('events/search/', views.search_events, name='search_events'),
+
+    # Geoapify Places endpoints
+    path('places/attractions/', views.search_attractions, name='search_attractions'),
+    path('places/food/', views.search_food, name='search_food'),
+    path('places/transport/', views.search_transport, name='search_transport'),
 ]

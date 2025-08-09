@@ -233,6 +233,7 @@ class FlightAIAgent:
             api_key=openai_api_key
         )
         self.flight_search = FlightSearchTool(serpapi_key)
+        # Prepare agent executor (not used in normal flow to keep responses fast)
         self.agent_executor = self._create_agent()
     
     def _create_agent(self) -> AgentExecutor:
@@ -308,7 +309,57 @@ Always return your responses in a structured JSON format that can be easily pars
         
         # Create the agent
         agent = create_openai_tools_agent(self.llm, [search_flights, analyze_flight_options], prompt)
-        return AgentExecutor(agent=agent, tools=[search_flights, analyze_flight_options], verbose=True)
+        # Keep verbose disabled to avoid noisy logs
+        return AgentExecutor(agent=agent, tools=[search_flights, analyze_flight_options], verbose=False)
+
+    def _destination_candidates(self, destination: str) -> List[str]:
+        """Generate plausible arrival_id candidates (IATA/city codes) for Google Flights.
+        Keeps it small and deterministic for speed.
+        """
+        if not destination:
+            return []
+        raw = str(destination).strip()
+        candidates: List[str] = []
+
+        # If already likely an IATA/city code
+        up = raw.strip().upper()
+        if len(up) in (3, 4) and up.isalpha():
+            candidates.append(up)
+
+        # Use first token (city hint)
+        city_token = raw.split(',')[0].strip().lower()
+        city_to_iata = {
+            # Common cities
+            'oslo': 'OSL', 'bergen': 'BGO', 'trondheim': 'TRD', 'stavanger': 'SVG',
+            'sydney': 'SYD', 'melbourne': 'MEL', 'brisbane': 'BNE', 'perth': 'PER',
+            'london': 'LHR', 'paris': 'CDG', 'frankfurt': 'FRA', 'amsterdam': 'AMS',
+            'tokyo': 'HND', 'singapore': 'SIN', 'hong kong': 'HKG', 'new york': 'JFK',
+            'delhi': 'DEL', 'mumbai': 'BOM', 'bangkok': 'BKK', 'dubai': 'DXB',
+        }
+        if city_token in city_to_iata:
+            candidates.append(city_to_iata[city_token])
+
+        # Country-level fallbacks: try major airports
+        country_token = raw.lower().strip()
+        country_to_iatas = {
+            'norway': ['OSL', 'BGO', 'TRD', 'SVG'],
+            'australia': ['SYD', 'MEL', 'BNE', 'PER'],
+            'united kingdom': ['LHR', 'LGW', 'MAN', 'EDI'], 'uk': ['LHR', 'LGW', 'MAN', 'EDI'],
+            'united states': ['JFK', 'LAX', 'ORD', 'SFO', 'MIA'], 'usa': ['JFK', 'LAX', 'ORD', 'SFO', 'MIA'],
+            'japan': ['HND', 'NRT', 'KIX'],
+            'india': ['DEL', 'BOM', 'BLR'],
+        }
+        if country_token in country_to_iatas:
+            candidates.extend(country_to_iatas[country_token])
+
+        # Deduplicate while preserving order
+        seen = set()
+        unique = []
+        for c in candidates:
+            if c not in seen:
+                seen.add(c)
+                unique.append(c)
+        return unique
     
     def _parse_duration(self, duration_str: str) -> int:
         """Parse duration string to total minutes"""
@@ -398,7 +449,7 @@ Always return your responses in a structured JSON format that can be easily pars
             
             query += " Provide detailed analysis and recommendations."
             
-            # First, perform a direct SerpAPI search for structured results
+            # First, perform a direct SerpAPI search for structured results (fast path)
             direct_results = self.flight_search.search_flights(
                 origin=origin,
                 destination=destination,
@@ -408,7 +459,6 @@ Always return your responses in a structured JSON format that can be easily pars
                 cabin_class=cabin_class,
                 country=country,
             )
-
             flights = direct_results.get("flights", []) if isinstance(direct_results, dict) else []
             if flights:
                 analysis = self._analyze_flights_simple(flights)
@@ -425,24 +475,47 @@ Always return your responses in a structured JSON format that can be easily pars
                     "raw_response": None,
                 }
 
-            # If no flights found, use the agent to provide helpful guidance and reasoning
-            result = await self.agent_executor.ainvoke({"input": query, "chat_history": []})
-            response_text = result.get("output", "")
-            # Try to extract a JSON explanation block if present
-            parsed_result: Dict[str, Any] = {}
-            if "{" in response_text and "}" in response_text:
-                try:
-                    start = response_text.find("{")
-                    end = response_text.rfind("}") + 1
-                    json_str = response_text[start:end]
-                    parsed_result = json.loads(json_str)
-                except Exception:
-                    parsed_result = {}
+            # Retry deterministically with arrival_id candidates derived from destination string
+            for cand in self._destination_candidates(destination)[:6]:
+                if not cand:
+                    continue
+                retry_results = self.flight_search.search_flights(
+                    origin=origin,
+                    destination=cand,
+                    departure_date=departure_date,
+                    return_date=return_date,
+                    adults=adults,
+                    cabin_class=cabin_class,
+                    country=country,
+                )
+                cand_flights = retry_results.get("flights", []) if isinstance(retry_results, dict) else []
+                if cand_flights:
+                    analysis = self._analyze_flights_simple(cand_flights)
+                    return {
+                        "success": True,
+                        "data": {
+                            "flights": cand_flights,
+                            "recommendations": analysis.get("recommendations"),
+                            "total_flights": analysis.get("total_flights"),
+                            "price_range": analysis.get("price_range"),
+                            "summary": analysis.get("summary"),
+                            "data_source": retry_results.get("data_source", "serpapi"),
+                        },
+                        "raw_response": None,
+                    }
 
+            # If no flights found, return a quick, helpful response without invoking LLM agent
             return {
                 "success": True,
-                "data": parsed_result if parsed_result else {"message": response_text, "status": "success"},
-                "raw_response": response_text,
+                "data": {
+                    "flights": [],
+                    "recommendations": None,
+                    "total_flights": 0,
+                    "price_range": {"lowest": 0, "highest": 0},
+                    "summary": "No flights found for the given criteria.",
+                    "data_source": direct_results.get("data_source", "serpapi"),
+                },
+                "raw_response": None,
             }
                 
         except Exception as e:

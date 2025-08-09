@@ -2,6 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { Camera, MapPin, Clock, Star, DollarSign, Plus, Check, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { placesService, type PlaceItem } from '@/services/placesService';
 
 interface Attraction {
   id: string;
@@ -26,6 +27,9 @@ const AttractionsResults: React.FC<AttractionsResultsProps> = ({
 }) => {
   const [showMore, setShowMore] = useState(false);
   const [selectedAttractionsState, setSelectedAttractionsState] = useState<string[]>(selectedAttractions);
+  const [items, setItems] = useState<PlaceItem[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     setSelectedAttractionsState(selectedAttractions);
@@ -137,17 +141,50 @@ const AttractionsResults: React.FC<AttractionsResultsProps> = ({
         : [...prev, attractionId];
       
       if (onAttractionsSelect) {
-        const selectedAttractionsData = allAttractions.filter(a => newSelection.includes(a.id));
-        onAttractionsSelect(selectedAttractionsData);
+        const source = (items ?? allAttractions) as any[];
+        const selectedAttractionsData = source.filter((a: any) => newSelection.includes(a.id));
+        onAttractionsSelect(selectedAttractionsData as any);
       }
       
       return newSelection;
     });
   };
 
-  const handleGenerate = () => {
-    console.log('Generating new attraction recommendations...');
-    // This would typically call an API to generate new recommendations
+  const handleGenerate = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      const raw = localStorage.getItem('tripPlanningData');
+      if (!raw) throw new Error('Missing trip planning data');
+      const planning = JSON.parse(raw);
+      let destination = planning.cityHint || planning.destination;
+      let res = await placesService.attractions({ destination, limit: 24, radius_meters: 20000 });
+      if (!res.success || !res.data || !res.data.items) {
+        throw new Error('No attractions found');
+      }
+      setItems(res.data.items);
+    } catch (e: any) {
+      // Retry with simplified city token if geocoding failed
+      try {
+        const raw = localStorage.getItem('tripPlanningData');
+        if (!raw) throw e;
+        const planning = JSON.parse(raw);
+        const destRaw = planning.destination || '';
+        const simpleCity = String(destRaw).split(',')[0].trim();
+        if (!simpleCity) throw e;
+        const res2 = await placesService.attractions({ destination: simpleCity, limit: 24, radius_meters: 20000 });
+        if (res2.success && res2.data && res2.data.items) {
+          setItems(res2.data.items);
+          setError(null);
+        } else {
+          setError(e.message || 'Failed to load attractions');
+        }
+      } catch (e2: any) {
+        setError(e2.message || 'Failed to load attractions');
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -171,8 +208,11 @@ const AttractionsResults: React.FC<AttractionsResultsProps> = ({
         </div>
       </div>
 
+      {loading && <div className="text-sm text-foreground-muted">Loading attractions...</div>}
+      {error && <div className="text-sm text-destructive">{error}</div>}
+
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {allAttractions.map((attraction, index) => {
+        {(items ?? allAttractions).map((attraction: any, index: number) => {
           const isSelected = selectedAttractionsState.includes(attraction.id);
           
           return (
@@ -190,7 +230,7 @@ const AttractionsResults: React.FC<AttractionsResultsProps> = ({
                     <div className="flex items-center space-x-2">
                       <div className="flex items-center space-x-1">
                         <Star className="w-4 h-4 text-ai-warning fill-current" />
-                        <span className="text-sm text-foreground-muted">{attraction.rating}</span>
+                        <span className="text-sm text-foreground-muted">{(attraction as any).rating}</span>
                       </div>
                       <button
                         onClick={(e) => toggleAttractionSelection(attraction.id, e)}
@@ -204,33 +244,33 @@ const AttractionsResults: React.FC<AttractionsResultsProps> = ({
                       </button>
                     </div>
                   </div>
-                  <p className="text-sm text-ai-tertiary">{attraction.type}</p>
+                  <p className="text-sm text-ai-tertiary">{(attraction as any).type}</p>
                 </div>
               </div>
 
-              <p className="text-sm text-foreground-secondary mb-4">{attraction.description}</p>
+              <p className="text-sm text-foreground-secondary mb-4">{(attraction as any).description}</p>
 
               <div className="grid grid-cols-2 gap-3 text-sm">
                 <div className="flex items-center space-x-2">
                   <DollarSign className="w-4 h-4 text-ai-success" />
                   <span className="text-foreground-muted">
-                    {attraction.price === 0 ? 'Free' : `$${attraction.price}`}
+                    {(attraction as any).price === 0 ? 'Free' : `$${(attraction as any).price}`}
                   </span>
                 </div>
 
                 <div className="flex items-center space-x-2">
                   <Clock className="w-4 h-4 text-ai-primary" />
-                  <span className="text-foreground-muted">{attraction.duration}</span>
+                  <span className="text-foreground-muted">{(attraction as any).duration}</span>
                 </div>
 
                 <div className="flex items-center space-x-2">
                   <MapPin className="w-4 h-4 text-ai-secondary" />
-                  <span className="text-foreground-muted">{attraction.distance}</span>
+                  <span className="text-foreground-muted">{(attraction as any).distance}</span>
                 </div>
 
                 <div className="flex items-center space-x-2">
                   <Camera className="w-4 h-4 text-ai-tertiary" />
-                  <span className="text-foreground-muted">{attraction.bestTime}</span>
+                  <span className="text-foreground-muted">{(attraction as any).bestTime}</span>
                 </div>
               </div>
             </div>

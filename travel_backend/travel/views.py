@@ -17,6 +17,7 @@ from .serializers import (
 )
 import os
 import requests
+from urllib.parse import urlencode
 
 # Authentication Views
 @api_view(['POST'])
@@ -807,3 +808,352 @@ def search_events(request):
         return Response({'success': False, 'error': f'Ticketmaster HTTP error: {str(e)}'}, status=502)
     except Exception as e:
         return Response({'success': False, 'error': f'Failed to search events: {str(e)}'}, status=500)
+
+
+# ---------------------- Geoapify Helpers & Endpoints ----------------------
+
+def _get_geoapify_key(request) -> str:
+    # Prefer env; allow override via request; fallback to provided key (per user request)
+    env_key = os.getenv('GEOAPIFY_API_KEY')
+    body_key = None
+    query_key = None
+    try:
+        body_key = request.data.get('api_key') if hasattr(request, 'data') else None
+    except Exception:
+        body_key = None
+    try:
+        query_key = request.GET.get('api_key') if hasattr(request, 'GET') else None
+    except Exception:
+        query_key = None
+    return env_key or body_key or query_key or '0c2d35c01c5c4a17a1ec30454a231ef4'
+
+
+def _geoapify_geocode(destination: str, api_key: str):
+    def _do_request(params: dict):
+        url = f'https://api.geoapify.com/v1/geocode/search?{urlencode(params)}'
+        r = requests.get(url, timeout=15)
+        r.raise_for_status()
+        return r.json()
+
+    try:
+        dest = (destination or '').strip()
+        if not dest:
+            return None
+        # Attempt 1: full text
+        params = {'text': dest, 'apiKey': api_key, 'limit': 1, 'lang': 'en'}
+        data = _do_request(params)
+        features = data.get('features', [])
+        # Attempt 2: first token (likely city) with type hint
+        if not features:
+            try:
+                city_token = dest.split(',')[0].strip()
+            except Exception:
+                city_token = dest
+            params2 = {'text': city_token, 'type': 'city', 'apiKey': api_key, 'limit': 1, 'lang': 'en'}
+            data = _do_request(params2)
+            features = data.get('features', [])
+        if not features:
+            return None
+        feat = features[0]
+        geom = feat.get('geometry', {})
+        coords = geom.get('coordinates', [])
+        if not coords or len(coords) < 2:
+            return None
+        lon, lat = float(coords[0]), float(coords[1])
+        props = feat.get('properties', {})
+        return {
+            'lat': lat,
+            'lon': lon,
+            'city': props.get('city') or props.get('town') or props.get('village'),
+            'country': props.get('country_code'),
+            'formatted': props.get('formatted'),
+            'place_id': props.get('place_id'),
+        }
+    except Exception:
+        return None
+
+
+def _geoapify_places(lat: float, lon: float, categories: str, api_key: str, limit: int = 20, radius_m: int = 15000, name: str | None = None, place_id: str | None = None):
+    params = {
+        'categories': categories,
+        'filter': f'place:{place_id}' if place_id else f'circle:{lon},{lat},{radius_m}',
+        'bias': f'proximity:{lon},{lat}',
+        'limit': limit,
+        'lang': 'en',
+        'apiKey': api_key,
+    }
+    if name:
+        params['name'] = name
+    url = f'https://api.geoapify.com/v2/places?{urlencode(params)}'
+    r = requests.get(url, timeout=20)
+    r.raise_for_status()
+    return r.json()
+
+
+def _km_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    from math import radians, sin, cos, atan2, sqrt
+    R = 6371.0
+    dlat = radians(lat2 - lat1)
+    dlon = radians(lon2 - lon1)
+    a = sin(dlat/2)**2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon/2)**2
+    c = 2 * atan2(sqrt(a), sqrt(1 - a))
+    return R * c
+
+
+def _best_time_for_category(category: str) -> str:
+    c = category.lower()
+    if any(k in c for k in ['museum', 'gallery', 'exhibit']):
+        return 'Afternoon'
+    if any(k in c for k in ['park', 'garden', 'viewpoint', 'beach']):
+        return 'Morning or Sunset'
+    if any(k in c for k in ['monument', 'historic', 'landmark', 'temple']):
+        return 'Morning'
+    if any(k in c for k in ['bar', 'pub', 'night']):
+        return 'Evening'
+    return 'Daytime'
+
+
+def _duration_estimate_for_category(category: str) -> str:
+    c = category.lower()
+    if any(k in c for k in ['museum', 'gallery']):
+        return '2-3 hours'
+    if any(k in c for k in ['park', 'garden', 'viewpoint', 'beach']):
+        return '1-2 hours'
+    if any(k in c for k in ['monument', 'landmark', 'temple']):
+        return '30-60 min'
+    return '1-2 hours'
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def search_attractions(request):
+    """Search attractions (tourism) using Geoapify Places API.
+    Body: destination (string), limit?, radius_meters?, name?
+    """
+    try:
+        api_key = _get_geoapify_key(request)
+        destination = (request.data.get('destination') or '').strip()
+        limit = int(request.data.get('limit', 24))
+        radius_m = int(request.data.get('radius_meters', 20000))
+        name_filter = request.data.get('name')
+        if not destination:
+            return Response({'success': False, 'error': 'destination is required'}, status=400)
+
+        geo = _geoapify_geocode(destination, api_key)
+        if not geo:
+            return Response({'success': False, 'error': f"Failed to geocode destination: '{destination}'"}, status=400)
+
+        # Use place filter when available; narrower category avoids 400 issues
+        categories = 'tourism.attraction'
+        try:
+            raw = _geoapify_places(
+                geo['lat'], geo['lon'], categories, api_key,
+                limit=limit, radius_m=radius_m, name=name_filter, place_id=geo.get('place_id')
+            )
+        except requests.HTTPError:
+            # Fallback to circle filter if place filter fails
+            raw = _geoapify_places(
+                geo['lat'], geo['lon'], categories, api_key,
+                limit=limit, radius_m=radius_m, name=name_filter, place_id=None
+            )
+        features = raw.get('features', [])
+        items = []
+        for f in features:
+            props = f.get('properties', {})
+            fid = props.get('place_id') or props.get('osm_id') or props.get('gid') or props.get('datasource', {}).get('raw', {}).get('id')
+            name = props.get('name') or props.get('address_line1') or 'Unknown'
+            cats = props.get('categories') or []
+            primary_cat = cats[0] if cats else (props.get('category') or 'tourism.attraction')
+            lat = props.get('lat') or (f.get('geometry', {}).get('coordinates', [None, None])[1])
+            lon = props.get('lon') or (f.get('geometry', {}).get('coordinates', [None, None])[0])
+            distance_km = None
+            try:
+                if lat and lon:
+                    distance_km = _km_distance(geo['lat'], geo['lon'], float(lat), float(lon))
+            except Exception:
+                distance_km = None
+            best_time = _best_time_for_category(primary_cat)
+            duration = _duration_estimate_for_category(primary_cat)
+            items.append({
+                'id': str(fid),
+                'name': name,
+                'type': primary_cat,
+                'rating': None,
+                'price': 0,
+                'duration': duration,
+                'distance_km': round(distance_km, 2) if distance_km is not None else None,
+                'description': props.get('address_line2') or props.get('formatted') or '',
+                'bestTime': best_time,
+                'address': props.get('formatted'),
+                'lat': lat,
+                'lon': lon,
+                'raw': props,
+            })
+        return Response({'success': True, 'data': {'items': items, 'total': len(items), 'center': geo}})
+    except requests.HTTPError as e:
+        return Response({'success': False, 'error': f'Geoapify HTTP error: {str(e)}'}, status=502)
+    except Exception as e:
+        return Response({'success': False, 'error': f'Failed to search attractions: {str(e)}'}, status=500)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def search_food(request):
+    """Search restaurants/food using Geoapify (catering.* categories).
+    Body: destination (string), limit?, radius_meters?, name?
+    """
+    try:
+        api_key = _get_geoapify_key(request)
+        destination = (request.data.get('destination') or '').strip()
+        limit = int(request.data.get('limit', 24))
+        radius_m = int(request.data.get('radius_meters', 15000))
+        name_filter = request.data.get('name')
+        if not destination:
+            return Response({'success': False, 'error': 'destination is required'}, status=400)
+
+        geo = _geoapify_geocode(destination, api_key)
+        if not geo:
+            return Response({'success': False, 'error': f"Failed to geocode destination: '{destination}'"}, status=400)
+
+        categories = ','.join([
+            'catering.restaurant',
+            'catering.cafe',
+            'catering.fast_food',
+            'catering.food_court',
+            'catering.bar',
+            'catering.biergarten',
+        ])
+        try:
+            raw = _geoapify_places(
+                geo['lat'], geo['lon'], categories, api_key,
+                limit=limit, radius_m=radius_m, name=name_filter, place_id=geo.get('place_id')
+            )
+        except requests.HTTPError:
+            raw = _geoapify_places(
+                geo['lat'], geo['lon'], categories, api_key,
+                limit=limit, radius_m=radius_m, name=name_filter, place_id=None
+            )
+        features = raw.get('features', [])
+        items = []
+        for f in features:
+            props = f.get('properties', {})
+            fid = props.get('place_id') or props.get('osm_id') or props.get('gid')
+            name = props.get('name') or props.get('address_line1') or 'Unknown'
+            cats = props.get('categories') or []
+            primary_cat = cats[0] if cats else (props.get('category') or 'catering.restaurant')
+            lat = props.get('lat') or (f.get('geometry', {}).get('coordinates', [None, None])[1])
+            lon = props.get('lon') or (f.get('geometry', {}).get('coordinates', [None, None])[0])
+            distance_km = None
+            try:
+                if lat and lon:
+                    distance_km = _km_distance(geo['lat'], geo['lon'], float(lat), float(lon))
+            except Exception:
+                distance_km = None
+            price_level = props.get('housenumber')  # Not provided; placeholder kept None
+            items.append({
+                'id': str(fid),
+                'name': name,
+                'cuisine': primary_cat,
+                'priceRange': None,
+                'rating': None,
+                'distance_km': round(distance_km, 2) if distance_km is not None else None,
+                'description': props.get('address_line2') or props.get('formatted') or '',
+                'specialDish': None,
+                'averageMeal': None,
+                'address': props.get('formatted'),
+                'lat': lat,
+                'lon': lon,
+                'raw': props,
+            })
+        return Response({'success': True, 'data': {'items': items, 'total': len(items), 'center': geo}})
+    except requests.HTTPError as e:
+        return Response({'success': False, 'error': f'Geoapify HTTP error: {str(e)}'}, status=502)
+    except Exception as e:
+        return Response({'success': False, 'error': f'Failed to search food: {str(e)}'}, status=500)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def search_transport(request):
+    """Search transport-related places (public_transport.*, bicycle, car rental) using Geoapify.
+    Body: destination (string), limit?, radius_meters?
+    """
+    try:
+        api_key = _get_geoapify_key(request)
+        destination = (request.data.get('destination') or '').strip()
+        limit = int(request.data.get('limit', 24))
+        # Use smaller default radius as per working sample
+        radius_m = int(request.data.get('radius_meters', 5000))
+        if not destination:
+            return Response({'success': False, 'error': 'destination is required'}, status=400)
+
+        geo = _geoapify_geocode(destination, api_key)
+        if not geo:
+            return Response({'success': False, 'error': f"Failed to geocode destination: '{destination}'"}, status=400)
+
+        # Always use circle filter with proximity bias per working method
+        categories = 'public_transport'
+        params = {
+            'categories': categories,
+            'filter': f'circle:{geo["lon"]},{geo["lat"]},{radius_m}',
+            'bias': f'proximity:{geo["lon"]},{geo["lat"]}',
+            'lang': 'en',
+            'limit': limit,
+            'apiKey': api_key,
+        }
+        url = f'https://api.geoapify.com/v2/places?{urlencode(params)}'
+        r = requests.get(url, timeout=20)
+        r.raise_for_status()
+        raw = r.json()
+        features = raw.get('features', [])
+        items = []
+        seen_ids = set()
+        seen_keys = set()
+        for f in features:
+            props = f.get('properties', {})
+            fid = props.get('place_id') or props.get('osm_id') or props.get('gid')
+            name = props.get('name') or props.get('address_line1') or 'Unnamed stop'
+            cats = props.get('categories') or []
+            primary_cat = cats[0] if cats else (props.get('category') or 'public_transport')
+            lat = props.get('lat') or (f.get('geometry', {}).get('coordinates', [None, None])[1])
+            lon = props.get('lon') or (f.get('geometry', {}).get('coordinates', [None, None])[0])
+            distance_km = None
+            try:
+                if lat and lon:
+                    distance_km = _km_distance(geo['lat'], geo['lon'], float(lat), float(lon))
+            except Exception:
+                distance_km = None
+            # De-duplicate by place_id first, then by name+address+coords signature
+            sig_id = str(fid) if fid is not None else None
+            if sig_id and sig_id in seen_ids:
+                continue
+            addr = props.get('formatted') or ''
+            try:
+                lat_q = round(float(lat), 5) if lat is not None else None
+                lon_q = round(float(lon), 5) if lon is not None else None
+            except Exception:
+                lat_q, lon_q = lat, lon
+            sig_key = f"{(name or '').strip().lower()}|{addr.strip().lower()}|{lat_q}|{lon_q}"
+            if sig_key in seen_keys:
+                continue
+            if sig_id:
+                seen_ids.add(sig_id)
+            seen_keys.add(sig_key)
+            items.append({
+                'id': str(fid),
+                'name': name,
+                'type': primary_cat,
+                'coverage': props.get('suburb') or props.get('city') or '',
+                'convenience': None,
+                'features': cats,
+                'address': props.get('formatted'),
+                'distance_km': round(distance_km, 2) if distance_km is not None else None,
+                'lat': lat,
+                'lon': lon,
+                'raw': props,
+            })
+        return Response({'success': True, 'data': {'items': items, 'total': len(items), 'center': geo}})
+    except requests.HTTPError as e:
+        return Response({'success': False, 'error': f'Geoapify HTTP error: {str(e)}'}, status=502)
+    except Exception as e:
+        return Response({'success': False, 'error': f'Failed to search transport: {str(e)}'}, status=500)

@@ -2,6 +2,7 @@
 import React, { useState } from 'react';
 import { Car, Train, Bus, Bike, MapPin, Clock, DollarSign, Check, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { placesService, type PlaceItem } from '@/services/placesService';
 
 interface Transport {
   id: string;
@@ -25,6 +26,9 @@ const TransportResults: React.FC<TransportResultsProps> = ({
   selectedTransport = []
 }) => {
   const [selectedTransportState, setSelectedTransportState] = useState<string[]>(selectedTransport);
+  const [items, setItems] = useState<PlaceItem[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const transportOptions: Transport[] = [
     {
@@ -111,17 +115,50 @@ const TransportResults: React.FC<TransportResultsProps> = ({
         : [...prev, transportId];
       
       if (onTransportSelect) {
-        const selectedTransportData = transportOptions.filter(t => newSelection.includes(t.id));
-        onTransportSelect(selectedTransportData);
+        const source = (items ?? transportOptions) as any[];
+        const selectedTransportData = source.filter((t: any) => newSelection.includes(t.id));
+        onTransportSelect(selectedTransportData as any);
       }
       
       return newSelection;
     });
   };
 
-  const handleGenerate = () => {
-    console.log('Generating new transport recommendations...');
-    // This would typically call an API to generate new recommendations
+  const handleGenerate = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      const raw = localStorage.getItem('tripPlanningData');
+      if (!raw) throw new Error('Missing trip planning data');
+      const planning = JSON.parse(raw);
+      let destination = planning.cityHint || planning.destination;
+      let res = await placesService.transport({ destination, limit: 24, radius_meters: 20000 });
+      if (!res.success || !res.data || !res.data.items) {
+        throw new Error('No transport options found');
+      }
+      setItems(res.data.items);
+    } catch (e: any) {
+      // Retry with simplified city token
+      try {
+        const raw = localStorage.getItem('tripPlanningData');
+        if (!raw) throw e;
+        const planning = JSON.parse(raw);
+        const destRaw = planning.destination || '';
+        const simpleCity = String(destRaw).split(',')[0].trim();
+        if (!simpleCity) throw e;
+        const res2 = await placesService.transport({ destination: simpleCity, limit: 24, radius_meters: 20000 });
+        if (res2.success && res2.data && res2.data.items) {
+          setItems(res2.data.items);
+          setError(null);
+        } else {
+          setError(e.message || 'Failed to load transport options');
+        }
+      } catch (e2: any) {
+        setError(e2.message || 'Failed to load transport options');
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -145,8 +182,11 @@ const TransportResults: React.FC<TransportResultsProps> = ({
         </div>
       </div>
 
+      {loading && <div className="text-sm text-foreground-muted">Loading transportation options...</div>}
+      {error && <div className="text-sm text-destructive">{error}</div>}
+
       <div className="space-y-4">
-        {transportOptions.map((transport, index) => {
+        {(items ?? transportOptions).map((transport: any, index: number) => {
           const isSelected = selectedTransportState.includes(transport.id);
           const TransportIcon = getTransportIcon(transport.type);
           
@@ -179,24 +219,24 @@ const TransportResults: React.FC<TransportResultsProps> = ({
                     
                     <p className="text-foreground-secondary mb-3">{transport.description}</p>
                     
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
                       <div className="flex items-center space-x-2">
                         <DollarSign className="w-4 h-4 text-ai-success" />
-                        <span className="text-foreground-muted">${transport.pricePerDay}/day</span>
+                          <span className="text-foreground-muted">{transport.pricePerDay ? `$${transport.pricePerDay}/day` : '—'}</span>
                       </div>
                       
                       <div className="flex items-center space-x-2">
                         <MapPin className="w-4 h-4 text-ai-secondary" />
-                        <span className="text-foreground-muted">{transport.coverage}</span>
+                          <span className="text-foreground-muted">{transport.address || transport.coverage}</span>
                       </div>
                       
                       <div className="flex items-center space-x-2">
-                        <div className="flex">
+                          <div className="flex">
                           {[...Array(5)].map((_, i) => (
                             <div
                               key={i}
                               className={`w-2 h-2 rounded-full mr-1 ${
-                                i < transport.convenience ? 'bg-ai-warning' : 'bg-foreground-muted'
+                                i < (transport.convenience ?? 0) ? 'bg-ai-warning' : 'bg-foreground-muted'
                               }`}
                             />
                           ))}
@@ -205,12 +245,12 @@ const TransportResults: React.FC<TransportResultsProps> = ({
                       </div>
                       
                       <div className="text-foreground-muted">
-                        Best for: {transport.bestFor}
+                          {transport.bestFor ? `Best for: ${transport.bestFor}` : (transport.type || 'Transport')}
                       </div>
                     </div>
                     
                     <div className="flex flex-wrap gap-2 mt-3">
-                      {transport.features.map((feature, i) => (
+                      {(transport.features || []).map((feature: string, i: number) => (
                         <div key={i} className="px-2 py-1 rounded-full bg-background-tertiary text-xs text-foreground-muted">
                           {feature}
                         </div>
