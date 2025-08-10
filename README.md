@@ -69,7 +69,7 @@ travel/
    - `DJANGO_DEBUG` ("True"/"False")
    - `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT`
 
-   Important: The current `travel_backend/travel_backend/settings.py` contains hardcoded credentials and secret key. Before pushing to a public repository, move these to environment variables (see Security notes below) and rotate any exposed secrets.
+   Important: Configure all secrets via environment variables (see Security notes below). Do not hardcode credentials or secret keys in `settings.py`.
 
 3. Apply migrations and create a superuser:
    ```bash
@@ -100,8 +100,8 @@ travel/
 3. Open `http://localhost:8080`.
 
 Notes:
-- The frontend API base URL is hardcoded as `http://localhost:8000/api` in `src/services/*.ts`. Update those if your backend runs elsewhere.
-- CORS is pre-configured in the backend for `5173`, `3000`, and `8080` dev ports.
+- Frontend services default to `http://localhost:8000/api` but respect `VITE_API_BASE_URL` if set.
+- CORS is pre-configured in the backend for dev ports `5173`, `3000`, and `8080`.
 
 ---
 
@@ -173,7 +173,7 @@ Notes:
   - `POST /trips/{trip_id}/live-itinerary/items/{item_id}/times/`
 
 - AI search
-  - `POST /flights/search/` body: `{ origin, destination, departure_date, return_date?, adults?, cabin_class?, preferences? }`
+  - `POST /flights/search/` body: `{ origin, destination, departure_date, return_date?, adults?, cabin_class?, preferences?, country? }`
   - `GET /flights/airports/?q=JFK` airport suggestions
   - `POST /hotels/search/` body: `{ destination, check_in_date, check_out_date, adults?, currency?, country?, language?, budget_max? }`
 
