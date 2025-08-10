@@ -55,6 +55,13 @@ export const placesService = {
       params
     );
   },
+
+  async placeGuide(params: { name: string; city?: string; country?: string; context?: string }) {
+    return postJson<{ success: boolean; data: any }>(
+      `${API_BASE_URL}/places/guide/`,
+      params
+    );
+  },
 };
 
 export type PlacesService = typeof placesService;

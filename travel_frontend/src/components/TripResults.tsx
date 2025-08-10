@@ -26,7 +26,7 @@ const TripResults: React.FC<TripResultsProps> = ({ onBack }) => {
   const [selectedAttractions, setSelectedAttractions] = useState<any[]>([]);
   const [selectedRestaurants, setSelectedRestaurants] = useState<any[]>([]);
   const [selectedTransport, setSelectedTransport] = useState<any[]>([]);
-  const [currentTab, setCurrentTab] = useState('flights');
+  const [currentTab, setCurrentTab] = useState('itinerary');
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -94,6 +94,42 @@ const TripResults: React.FC<TripResultsProps> = ({ onBack }) => {
         console.warn('Failed to preload planning stages', e);
       }
     })();
+  }, []);
+
+  // Keep stage selections in sync after itinerary generation/updates
+  useEffect(() => {
+    const onRefresh = async () => {
+      try {
+        const tid = localStorage.getItem('currentTripId');
+        if (!tid || tid === 'undefined' || tid === 'null') return;
+        const stages = await tripService.getTripPlanningStages(tid);
+        if (Array.isArray(stages)) {
+          const byType: Record<string, any> = {};
+          for (const s of stages) {
+            if (s && s.stage_type) byType[s.stage_type] = s;
+          }
+          if (byType['flight'] && Array.isArray(byType['flight'].selected_items) && byType['flight'].selected_items.length > 0) {
+            setSelectedFlight(byType['flight'].selected_items[0]);
+          }
+          if (byType['hotel'] && Array.isArray(byType['hotel'].selected_items) && byType['hotel'].selected_items.length > 0) {
+            setSelectedHotel(byType['hotel'].selected_items[0]);
+          }
+          if (byType['attractions'] && Array.isArray(byType['attractions'].selected_items)) {
+            setSelectedAttractions(byType['attractions'].selected_items);
+          }
+          if (byType['food'] && Array.isArray(byType['food'].selected_items)) {
+            setSelectedRestaurants(byType['food'].selected_items);
+          }
+          if (byType['transport'] && Array.isArray(byType['transport'].selected_items)) {
+            setSelectedTransport(byType['transport'].selected_items);
+          }
+        }
+      } catch (e) {
+        console.warn('refresh stages failed', e);
+      }
+    };
+    window.addEventListener('itinerary:refresh', onRefresh);
+    return () => window.removeEventListener('itinerary:refresh', onRefresh);
   }, []);
 
   const handleFlightSelect = (flight: any) => {
@@ -207,6 +243,7 @@ const TripResults: React.FC<TripResultsProps> = ({ onBack }) => {
       pendingSelections.attractions = attractions;
       localStorage.setItem('pendingSelections', JSON.stringify(pendingSelections));
     }
+    try { window.dispatchEvent(new Event('itinerary:refresh')); } catch {}
   };
 
   const handleRestaurantsSelect = (restaurants: any[]) => {
@@ -237,6 +274,7 @@ const TripResults: React.FC<TripResultsProps> = ({ onBack }) => {
       pendingSelections.restaurants = restaurants;
       localStorage.setItem('pendingSelections', JSON.stringify(pendingSelections));
     }
+    try { window.dispatchEvent(new Event('itinerary:refresh')); } catch {}
   };
 
   const handleTransportSelect = (transport: any[]) => {
@@ -267,6 +305,7 @@ const TripResults: React.FC<TripResultsProps> = ({ onBack }) => {
       pendingSelections.transport = transport;
       localStorage.setItem('pendingSelections', JSON.stringify(pendingSelections));
     }
+    try { window.dispatchEvent(new Event('itinerary:refresh')); } catch {}
   };
 
   const canViewItinerary = selectedFlight && selectedHotel;
@@ -393,6 +432,11 @@ const TripResults: React.FC<TripResultsProps> = ({ onBack }) => {
         <div className="glass-card-secondary p-4">
           <div className="flex items-center justify-center space-x-3">
             <div className="flex items-center space-x-2">
+              <div className={`w-3 h-3 rounded-full ${canViewItinerary ? 'bg-ai-tertiary animate-pulse' : 'bg-foreground-muted'}`} />
+              <span className="text-sm text-foreground-muted">Live Plan</span>
+            </div>
+            <div className="w-8 h-0.5 bg-background-tertiary" />
+            <div className="flex items-center space-x-2">
               <div className={`w-3 h-3 rounded-full ${selectedFlight ? 'bg-ai-success' : 'bg-ai-primary animate-pulse'}`} />
               <span className="text-sm text-foreground-muted">Flights</span>
             </div>
@@ -416,17 +460,19 @@ const TripResults: React.FC<TripResultsProps> = ({ onBack }) => {
               <div className={`w-3 h-3 rounded-full ${selectedTransport.length > 0 ? 'bg-ai-success' : selectedRestaurants.length > 0 ? 'bg-ai-tertiary animate-pulse' : 'bg-foreground-muted'}`} />
               <span className="text-sm text-foreground-muted">Transport</span>
             </div>
-            <div className="w-8 h-0.5 bg-background-tertiary" />
-            <div className="flex items-center space-x-2">
-              <div className={`w-3 h-3 rounded-full ${canViewItinerary ? 'bg-ai-tertiary animate-pulse' : 'bg-foreground-muted'}`} />
-              <span className="text-sm text-foreground-muted">Live Plan</span>
-            </div>
           </div>
         </div>
 
         {/* Main Content */}
         <Tabs value={currentTab} onValueChange={setCurrentTab} className="space-y-6">
           <TabsList className="grid w-full grid-cols-9 glass-card p-2">
+            <TabsTrigger 
+              value="itinerary" 
+              className="text-xs"
+              disabled={false}
+            >
+              Live Plan
+            </TabsTrigger>
             <TabsTrigger value="flights" className="text-xs">Flights</TabsTrigger>
             <TabsTrigger value="hotels" className="text-xs">Hotels</TabsTrigger>
             <TabsTrigger value="attractions" className="text-xs">Places</TabsTrigger>
@@ -435,13 +481,6 @@ const TripResults: React.FC<TripResultsProps> = ({ onBack }) => {
             <TabsTrigger value="weather" className="text-xs">Weather</TabsTrigger>
             <TabsTrigger value="events" className="text-xs">Events</TabsTrigger>
             <TabsTrigger value="budget" className="text-xs">Budget</TabsTrigger>
-            <TabsTrigger 
-              value="itinerary" 
-              className="text-xs"
-              disabled={!canViewItinerary}
-            >
-              Live Plan
-            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="flights" className="space-y-6">
@@ -634,20 +673,12 @@ const TripResults: React.FC<TripResultsProps> = ({ onBack }) => {
           </TabsContent>
 
           <TabsContent value="itinerary">
-            {canViewItinerary ? (
-              <RealTimeItinerary />
-            ) : (
-              <div className="glass-card p-8 text-center">
-                <p className="text-foreground-muted">
-                  Please select a flight and hotel to generate your live itinerary.
-                </p>
-              </div>
-            )}
+            <RealTimeItinerary />
           </TabsContent>
         </Tabs>
 
         {/* Quick Actions */}
-        {canViewItinerary && currentTab !== 'itinerary' && (
+        {currentTab !== 'itinerary' && (
           <div className="fixed bottom-6 right-6">
             <Button
               onClick={() => setCurrentTab('itinerary')}

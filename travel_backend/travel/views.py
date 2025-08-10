@@ -18,6 +18,10 @@ from .serializers import (
 import os
 import requests
 from urllib.parse import urlencode
+from datetime import timedelta
+import json
+from openai import OpenAI
+from django.conf import settings
 import time
 
 # Authentication Views
@@ -1355,6 +1359,78 @@ def search_transport(request):
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
+def place_ai_guide(request):
+    """Generate a detailed place guide using OpenAI only (no external tools)."""
+    try:
+        api_key = settings.OPENAI_API_KEY or os.getenv('OPENAI_API_KEY')
+        if not api_key:
+            return Response({'success': False, 'error': 'OPENAI_API_KEY not configured'}, status=500)
+
+        name = (request.data.get('name') or '').strip()
+        city = (request.data.get('city') or request.data.get('destination') or '').strip()
+        country = (request.data.get('country') or '').strip()
+        context = (request.data.get('context') or '').strip()
+        if not name:
+            return Response({'success': False, 'error': 'name is required'}, status=400)
+
+        client = OpenAI(api_key=api_key)
+
+        system_prompt = (
+            "You are a precise local travel guide. Produce STRICT JSON only. "
+            "Be concise but helpful. If unsure, say 'Unknown' rather than hallucinating."
+        )
+        user_prompt = {
+            "place": name,
+            "city": city,
+            "country": country,
+            "extra_context": context,
+            "output_schema": {
+                "place": {"name": "", "city": "", "country": "", "type": "", "summary": ""},
+                "bestTimes": {
+                    "overall": "",
+                    "byTimeOfDay": [{"time": "Morning|Afternoon|Evening|Night", "whatToExpect": "", "tips": ""}],
+                    "seasonal": [{"season": "", "why": ""}],
+                    "crowdLevels": [{"time": "", "level": "Low|Moderate|High"}]
+                },
+                "photoGuide": {"bestSpots": [""], "bestTimes": "", "tips": [""]},
+                "highlights": [{"title": "", "description": ""}],
+                "practicalInfo": {
+                    "tickets": {"required": "Yes|No|Unknown", "price": "", "whereToBuy": ""},
+                    "openingHours": "",
+                    "duration": "",
+                    "howToReach": "",
+                    "accessibility": "",
+                    "safety": "",
+                    "etiquette": "",
+                    "localRules": ""
+                },
+                "nearby": [{"name": "", "distance": "", "whyVisit": ""}],
+                "suggestedItineraries": [
+                    {"duration": "2h", "plan": [{"time": "", "activity": ""}]}
+                ]
+            }
+        }
+
+        completion = client.chat.completions.create(
+            model=(settings.OPENAI_MODEL or "gpt-4o-mini"),
+            temperature=0.2,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(user_prompt)}
+            ]
+        )
+        content = completion.choices[0].message.content if completion.choices else "{}"
+        try:
+            data = json.loads(content)
+        except Exception:
+            data = {"raw": content}
+
+        return Response({"success": True, "data": data}, status=200)
+    except Exception as e:
+        return Response({"success": False, "error": f"Failed to generate guide: {str(e)}"}, status=500)
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
 def generate_itinerary(request, trip_id):
     """Generate a detailed day-by-day itinerary based on selected trip items.
     Strategy:
@@ -1363,7 +1439,6 @@ def generate_itinerary(request, trip_id):
     - Insert flight arrival/departure blocks when available, hotel check-in on day 1
     - Persist into TripItinerary.day_plans as a structured list
     """
-    from datetime import datetime, timedelta
 
     trip = get_object_or_404(Trip, id=trip_id, user=request.user)
 
@@ -1567,3 +1642,619 @@ def generate_itinerary(request, trip_id):
 
     ser = TripItinerarySerializer(itinerary)
     return Response({'success': True, 'data': ser.data})
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def generate_full_itinerary(request, trip_id):
+    """Multi-agent style orchestration to auto-generate a full itinerary.
+    - Tries to fetch flights and hotels using existing agents; if none, fabricates plausible options
+    - Finds attractions, food, and transport via Geoapify
+    - Optionally pulls events via Ticketmaster (if key configured)
+    - Builds a detailed time-blocked itinerary for all days
+    - Persists TripItems (selected), planning stages, and TripItinerary
+    """
+    try:
+        from .flight_agent import get_flight_agent
+        from .hotel_agent import get_hotel_agent
+    except Exception:
+        get_flight_agent = None
+        get_hotel_agent = None
+
+    try:
+        trip = get_object_or_404(Trip, id=trip_id, user=request.user)
+        start = trip.start_date
+        end = trip.end_date if trip.end_date >= trip.start_date else trip.start_date
+        num_days = (end - start).days + 1
+
+        body = request.data or {}
+        origin = body.get('origin') or ''
+        user_country = (body.get('country') or '').lower() or None
+
+        # Geo context for destination
+        geo = _geoapify_geocode(trip.destination, _get_geoapify_key(request)) or {}
+        dest_country = (geo.get('country') or '').lower() or None
+
+        # 1) Flights
+        selected_flight = None
+        try:
+            if get_flight_agent and settings.SERPAPI_KEY and settings.OPENAI_API_KEY:
+                agent = get_flight_agent()
+                res = None
+                import asyncio
+                async def do():
+                    return await agent.search_and_recommend_flights(
+                        origin=origin or 'DEL',  # fallback hub for robustness
+                        destination=trip.destination,
+                        departure_date=str(start),
+                        return_date=str(end),
+                        adults=max(int(trip.travelers or 1), 1),
+                        cabin_class='economy',
+                        preferences=None,
+                        country=user_country or dest_country,
+                    )
+                loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
+                try:
+                    res = loop.run_until_complete(do())
+                finally:
+                    loop.close()
+                flights = (res or {}).get('data', {}).get('flights') or []
+                if flights:
+                    # Best value first
+                    selected_flight = flights[0]
+        except Exception:
+            selected_flight = None
+        if not selected_flight:
+            # Fabricate a plausible flight
+            selected_flight = {
+                'id': 'flight_placeholder',
+                'airline': 'Recommended Carrier',
+                'price': 950,
+                'departure': 'Origin',
+                'arrival': trip.destination,
+                'duration': '8h 30m',
+                'stops': 0,
+                'departureTime': f"{start}T09:00:00Z",
+                'arrivalTime': f"{start}T17:30:00Z",
+                'type': 'Round-trip',
+            }
+
+        # 2) Hotels
+        selected_hotel = None
+        try:
+            if get_hotel_agent and settings.SERPAPI_KEY and settings.OPENAI_API_KEY:
+                hotel_agent = get_hotel_agent()
+                res = None
+                import asyncio
+                async def do_h():
+                    return await hotel_agent.search_and_recommend_hotels(
+                        destination=trip.destination,
+                        check_in_date=str(start),
+                        check_out_date=str(end),
+                        adults=max(int(trip.travelers or 1), 1),
+                        currency='USD',
+                        country=dest_country or 'us',
+                        language='en',
+                        budget_max=None,
+                    )
+                loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
+                try:
+                    res = loop.run_until_complete(do_h())
+                finally:
+                    loop.close()
+                hotels = (res or {}).get('data', {}).get('hotels') or []
+                if hotels:
+                    selected_hotel = hotels[0]
+        except Exception:
+            selected_hotel = None
+        if not selected_hotel:
+            selected_hotel = {
+                'id': 'hotel_placeholder',
+                'name': 'Recommended Hotel',
+                'price': 140,
+                'rating': 4.4,
+                'location': trip.destination,
+                'distance': 'Central',
+                'amenities': ['WiFi','Breakfast','Airport Shuttle'],
+                'image': '/placeholder.svg',
+                'priceCategory': 'comfort',
+            }
+
+        # 3) Places via Geoapify
+        def try_places(categories: str, limit: int = 24, radius_m: int = 15000):
+            api_key = _get_geoapify_key(request)
+            if not geo:
+                return []
+            try:
+                raw = _geoapify_places(geo['lat'], geo['lon'], categories, api_key, limit=limit, radius_m=radius_m, name=None, place_id=geo.get('place_id'))
+            except requests.HTTPError:
+                raw = _geoapify_places(geo['lat'], geo['lon'], categories, api_key, limit=limit, radius_m=radius_m, name=None, place_id=None)
+            items = []
+            for f in raw.get('features', []) or []:
+                p = f.get('properties') or {}
+                items.append({
+                    'id': str(p.get('place_id') or p.get('osm_id') or p.get('gid') or p.get('datasource', {}).get('raw', {}).get('id')),
+                    'name': p.get('name') or p.get('address_line1') or 'Unknown',
+                    'type': (p.get('categories') or [p.get('category') or ''])[0],
+                    'price': 0,
+                    'duration': '1-2 hours',
+                    'address': p.get('formatted'),
+                    'lat': p.get('lat') or (f.get('geometry', {}).get('coordinates', [None, None])[1]),
+                    'lon': p.get('lon') or (f.get('geometry', {}).get('coordinates', [None, None])[0]),
+                    'bestTime': _best_time_for_category((p.get('categories') or [p.get('category') or ''])[0]),
+                })
+            return items
+
+        attractions = try_places('tourism.attraction', limit=24)
+        restaurants = try_places('catering.restaurant,catering.cafe,catering.fast_food', limit=20)
+        transports = try_places('public_transport', limit=15, radius_m=8000)
+
+        # 4) Events (best-effort)
+        events_list = []
+        try:
+            req = request
+            # Monkey param injection for internal call
+            class Q: pass
+            req.GET = req.GET.copy()
+            req.GET._mutable = True
+            req.GET['destination'] = trip.destination
+            req.GET['start_date'] = str(start)
+            req.GET['end_date'] = str(end)
+            resp = search_events(req)
+            data = getattr(resp, 'data', None) or getattr(resp, 'data', {})
+            if isinstance(data, dict) and data.get('success'):
+                events_list = data.get('data', {}).get('events', [])
+        except Exception:
+            events_list = []
+
+        # 5) Persist TripItems as selected for core categories
+        def add_item(item_type: str, name: str, price: float, ext_id: str, metadata: dict):
+            try:
+                TripItem.objects.create(
+                    trip=trip,
+                    item_type=item_type,
+                    name=name[:200],
+                    description=metadata.get('description','')[:500],
+                    price=price or 0,
+                    currency='USD',
+                    external_id=(ext_id or '')[:100],
+                    metadata=metadata,
+                    is_selected=True,
+                )
+            except Exception:
+                pass
+
+        # Clear and replace selected items to persist the generated plan
+        try:
+            # Remove previous generated items to avoid duplicates
+            TripItem.objects.filter(trip=trip).delete()
+        except Exception:
+            pass
+        if selected_flight:
+            add_item('flight', selected_flight.get('airline') or selected_flight.get('name') or 'Flight', float(selected_flight.get('price') or 0), str(selected_flight.get('id') or ''), selected_flight)
+        if selected_hotel:
+            add_item('hotel', selected_hotel.get('name') or 'Hotel', float(selected_hotel.get('price') or 0), str(selected_hotel.get('id') or ''), selected_hotel)
+        for a in attractions[:8]:
+            add_item('attraction', a.get('name') or 'Attraction', float(a.get('price') or 0), str(a.get('id') or ''), a)
+        for r in restaurants[:6]:
+            add_item('restaurant', r.get('name') or 'Restaurant', float(r.get('price') or 0), str(r.get('id') or ''), r)
+        for t in transports[:4]:
+            add_item('transport', t.get('name') or 'Transport', float(t.get('price') or 0), str(t.get('id') or ''), t)
+
+        # Sync planning stages
+        try:
+            stages_payload = [
+                { 'stage_type': 'flight', 'status': 'completed', 'selected_items': [selected_flight] if selected_flight else [] },
+                { 'stage_type': 'hotel', 'status': 'completed', 'selected_items': [selected_hotel] if selected_hotel else [] },
+                { 'stage_type': 'attractions', 'status': 'completed' if attractions else 'pending', 'selected_items': attractions[:10] },
+                { 'stage_type': 'food', 'status': 'completed' if restaurants else 'pending', 'selected_items': restaurants[:10] },
+                { 'stage_type': 'transport', 'status': 'completed' if transports else 'pending', 'selected_items': transports[:10] },
+            ]
+            # Persist to stages via list view (ensures frontend list API returns same selections)
+            # Fallback to direct model save if API not used here
+            for st in stages_payload:
+                stage, created = TripPlanningStage.objects.get_or_create(
+                    trip=trip,
+                    stage_type=st['stage_type'],
+                    defaults={'status': st['status'], 'selected_items': st['selected_items'], 'ai_options': [], 'stage_preferences': {}}
+                )
+                if not created:
+                    stage.status = st['status']
+                    stage.selected_items = st['selected_items']
+                    stage.ai_options = stage.ai_options or []
+                    stage.stage_preferences = stage.stage_preferences or {}
+                    stage.save()
+            # Also push selected items into TripItem model as selected for each stage
+            # (Already done above) Ensures other views render selections immediately
+        except Exception:
+            pass
+
+        # 6) Build detailed time-blocked itinerary (OpenAI-first with de-duplication)
+        def hhmm(h: int, m: int = 0) -> str:
+            return f"{h:02d}:{m:02d}"
+
+        day_plans = []
+        ai_plan = None
+        try:
+            api_key = settings.OPENAI_API_KEY or os.getenv('OPENAI_API_KEY')
+            if api_key:
+                client = OpenAI(api_key=api_key)
+                user_payload = {
+                    'destination': trip.destination,
+                    'start_date': str(start),
+                    'end_date': str(end),
+                    'num_days': num_days,
+                    'travelers': int(trip.travelers or 1),
+                    'flight': {k: selected_flight.get(k) for k in ['airline','price','departure','arrival','duration','stops','departureTime','arrivalTime'] if selected_flight} if selected_flight else None,
+                    'hotel': {k: selected_hotel.get(k) for k in ['name','price','rating','location','distance','amenities'] if selected_hotel} if selected_hotel else None,
+                    'candidates': {
+                        'attractions': [{'name': x.get('name'), 'address': x.get('address'), 'bestTime': x.get('bestTime')} for x in attractions[:20]],
+                        'restaurants': [{'name': x.get('name'), 'address': x.get('address')} for x in restaurants[:20]],
+                        'transport': [{'name': x.get('name'), 'address': x.get('address')} for x in transports[:15]],
+                        'events': events_list[:10],
+                    },
+                }
+                system_prompt = (
+                    "You are a meticulous trip planner. Create a full day-by-day itinerary for the given trip. "
+                    "Rules: 1) Use time ranges 'HH:MM - HH:MM'. 2) Do not repeat the same place across any days. "
+                    "3) Always include lunch around 13:00 and dinner around 19:00. 4) Prefer provided candidates but "
+                    "you may add plausible well-known places using your knowledge. 5) Fill missing details concisely. "
+                    "Return STRICT JSON with key 'day_plans' only."
+                )
+                user_prompt = {
+                    'trip': user_payload,
+                    'output_schema': {
+                        'day_plans': [
+                            {
+                                'date': 'Month DD, YYYY',
+                                'day_number': 1,
+                                'activities': [
+                                    {
+                                        'time': '09:00 - 10:00',
+                                        'type': 'flight|hotel|attraction|meal|transport',
+                                        'title': 'string',
+                                        'location': 'string',
+                                        'duration': 'hours as decimal string e.g. 1.5',
+                                        'cost': 0,
+                                        'notes': 'string',
+                                        'tips': 'string'
+                                    }
+                                ],
+                                'total_cost': 0,
+                                'walking_distance': '—',
+                                'weather': ''
+                            }
+                        ]
+                    }
+                }
+                comp = client.chat.completions.create(
+                    model=(settings.OPENAI_MODEL or 'gpt-4o-mini'),
+                    temperature=0.2,
+                    messages=[
+                        {'role': 'system', 'content': system_prompt},
+                        {'role': 'user', 'content': json.dumps(user_prompt)}
+                    ]
+                )
+                content = comp.choices[0].message.content if comp.choices else '{}'
+                ai = json.loads(content)
+                if isinstance(ai, dict) and isinstance(ai.get('day_plans'), list) and len(ai['day_plans']) >= 1:
+                    ai_plan = ai['day_plans']
+        except Exception:
+            ai_plan = None
+
+        used_titles: set[str] = set()
+        def normalize_plan(raw_day_plans: list) -> list:
+            out = []
+            for i, dp in enumerate(raw_day_plans[:num_days]):
+                date = (start + timedelta(days=i)).strftime('%B %d, %Y')
+                acts = []
+                for a in (dp.get('activities') or []):
+                    title = str(a.get('title') or '').strip() or 'Activity'
+                    if title.lower() in used_titles:
+                        continue
+                    time_str = str(a.get('time') or '09:00').strip()
+                    # enforce range form
+                    if '-' not in time_str:
+                        time_str = f"{time_str} - {time_str}"
+                    acts.append({
+                        'time': time_str,
+                        'type': a.get('type') or 'attraction',
+                        'title': title,
+                        'location': a.get('location') or trip.destination,
+                        'duration': str(a.get('duration') or '1.0'),
+                        'cost': float(a.get('cost') or 0),
+                        'notes': a.get('notes') or '',
+                        'tips': a.get('tips') or '',
+                    })
+                    used_titles.add(title.lower())
+                total_cost = sum(float(x.get('cost') or 0) for x in acts)
+                out.append({
+                    'date': date,
+                    'day_number': i + 1,
+                    'activities': acts,
+                    'total_cost': round(total_cost, 2),
+                    'walking_distance': dp.get('walking_distance') or '—',
+                    'weather': dp.get('weather') or ''
+                })
+            return out
+
+        if ai_plan:
+            day_plans = normalize_plan(ai_plan)
+            # Ensure first/last day include flight/hotel anchors if available
+            if selected_flight and day_plans:
+                day_plans[0]['activities'].insert(0, {
+                    'time': f"{hhmm(9)} - {hhmm(10)}",
+                    'type': 'flight',
+                    'title': f"Arrive - {selected_flight.get('airline') or selected_flight.get('name','Flight')}",
+                    'location': trip.destination,
+                    'duration': '1.0',
+                    'cost': float(selected_flight.get('price') or 0),
+                    'notes': 'Immigration and baggage claim',
+                })
+            if selected_hotel and day_plans:
+                day_plans[0]['activities'].insert(1, {
+                    'time': f"{hhmm(11)} - {hhmm(11,30)}",
+                    'type': 'hotel',
+                    'title': f"Check-in - {selected_hotel.get('name','Hotel')}",
+                    'location': trip.destination,
+                    'duration': '0.5',
+                    'cost': 0,
+                    'notes': 'Store luggage if early',
+                })
+            if selected_hotel and day_plans:
+                day_plans[-1]['activities'].append({
+                    'time': f"{hhmm(11)} - {hhmm(11,30)}",
+                    'type': 'hotel',
+                    'title': f"Checkout - {selected_hotel.get('name','Hotel')}",
+                    'location': trip.destination,
+                    'duration': '0.5',
+                    'cost': 0,
+                    'notes': '',
+                })
+            if selected_flight and day_plans:
+                day_plans[-1]['activities'].append({
+                    'time': f"{hhmm(18)} - {hhmm(19)}",
+                    'type': 'flight',
+                    'title': f"Depart - {selected_flight.get('airline') or selected_flight.get('name','Flight')}",
+                    'location': trip.destination,
+                    'duration': '1.0',
+                    'cost': float(selected_flight.get('price') or 0),
+                    'notes': 'Arrive at airport 3 hours early',
+                })
+        else:
+            # Fallback deterministic plan with de-duplication
+            used_titles.clear()
+            for d in range(num_days):
+                date = start + timedelta(days=d)
+                acts = []
+                if d == 0 and selected_flight:
+                    acts.append({
+                        'time': f"{hhmm(9)} - {hhmm(10)}",
+                        'type': 'flight',
+                        'title': f"Arrive - {selected_flight.get('airline') or selected_flight.get('name','Flight')}",
+                        'location': trip.destination,
+                        'duration': '1.0',
+                        'cost': selected_flight.get('price', 0),
+                        'notes': 'Immigration and baggage claim',
+                    })
+                if d == 0 and selected_hotel:
+                    acts.append({
+                        'time': f"{hhmm(11)} - {hhmm(11,30)}",
+                        'type': 'hotel',
+                        'title': f"Check-in - {selected_hotel.get('name','Hotel')}",
+                        'location': trip.destination,
+                        'duration': '0.5',
+                        'cost': 0,
+                        'notes': 'Store luggage if early',
+                    })
+                # fill attractions without repeats
+                start_index = d * 3
+                for a in attractions[start_index:start_index+3]:
+                    title = a.get('name','Attraction')
+                    if title.lower() in used_titles:
+                        continue
+                    used_titles.add(title.lower())
+                    acts.append({
+                        'time': f"{hhmm(10)} - {hhmm(12)}",
+                        'type': 'attraction',
+                        'title': title,
+                        'location': a.get('address','') or trip.destination,
+                        'duration': '2.0',
+                        'cost': a.get('price', 0),
+                        'notes': a.get('bestTime',''),
+                    })
+                # Lunch & Dinner
+                acts.append({
+                    'time': f"{hhmm(13)} - {hhmm(14)}",
+                    'type': 'meal',
+                    'title': (restaurants[min(d*2, max(0, len(restaurants)-1))]['name'] if restaurants else 'Lunch'),
+                    'location': (restaurants[min(d*2, max(0, len(restaurants)-1))].get('address') if restaurants else trip.destination) or trip.destination,
+                    'duration': '1.0',
+                    'cost': (restaurants[min(d*2, max(0, len(restaurants)-1))].get('price') if restaurants else 20) or 20,
+                    'notes': 'Local specialty',
+                })
+                acts.append({
+                    'time': f"{hhmm(19)} - {hhmm(20,30)}",
+                    'type': 'meal',
+                    'title': (restaurants[min(d*2+1, max(0, len(restaurants)-1))]['name'] if restaurants else 'Dinner'),
+                    'location': (restaurants[min(d*2+1, max(0, len(restaurants)-1))].get('address') if restaurants else trip.destination) or trip.destination,
+                    'duration': '1.5',
+                    'cost': (restaurants[min(d*2+1, max(0, len(restaurants)-1))].get('price') if restaurants else 35) or 35,
+                    'notes': 'Reserve table if possible',
+                })
+                if d == num_days - 1 and selected_hotel:
+                    acts.append({
+                        'time': f"{hhmm(11)} - {hhmm(11,30)}",
+                        'type': 'hotel',
+                        'title': f"Checkout - {selected_hotel.get('name','Hotel')}",
+                        'location': trip.destination,
+                        'duration': '0.5',
+                        'cost': 0,
+                        'notes': '',
+                    })
+                if d == num_days - 1 and selected_flight:
+                    acts.append({
+                        'time': f"{hhmm(18)} - {hhmm(19)}",
+                        'type': 'flight',
+                        'title': f"Depart - {selected_flight.get('airline') or selected_flight.get('name','Flight')}",
+                        'location': trip.destination,
+                        'duration': '1.0',
+                        'cost': selected_flight.get('price', 0),
+                        'notes': 'Arrive at airport 3 hours early',
+                    })
+                total_cost = sum(float(a.get('cost', 0) or 0) for a in acts)
+                day_plans.append({
+                    'date': date.strftime('%B %d, %Y'),
+                    'day_number': d + 1,
+                    'activities': acts,
+                    'total_cost': round(total_cost, 2),
+                    'walking_distance': '—',
+                    'weather': '',
+                })
+
+        itinerary, _ = TripItinerary.objects.get_or_create(trip=trip)
+        itinerary.day_plans = day_plans
+        itinerary.save()
+
+        ser = TripItinerarySerializer(itinerary)
+        return Response({'success': True, 'data': ser.data})
+    except Exception as e:
+        return Response({'success': False, 'error': f'Failed to generate full itinerary: {str(e)}'}, status=500)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def estimate_budget(request, trip_id):
+    """Estimate/fill missing prices for selected stage items using OpenAI.
+    Updates TripItems and TripPlanningStage.selected_items in place, then returns a summary.
+    """
+    try:
+        trip = get_object_or_404(Trip, id=trip_id, user=request.user)
+        api_key = settings.OPENAI_API_KEY or os.getenv('OPENAI_API_KEY')
+        if not api_key:
+            return Response({'success': False, 'error': 'OPENAI_API_KEY not configured'}, status=500)
+
+        # Gather selected stage items
+        stages = list(TripPlanningStage.objects.filter(trip=trip))
+        by_type = {s.stage_type: (s.selected_items or []) for s in stages}
+
+        # Build payload of items missing/zero price
+        def needs_price(x: dict, cat: str) -> bool:
+            try:
+                if cat == 'food':
+                    return not x.get('averageMeal') and not x.get('price')
+                if cat == 'attractions':
+                    return not x.get('price')
+                if cat == 'transport':
+                    return not x.get('pricePerDay') and not x.get('price')
+                if cat == 'hotel':
+                    return not x.get('price')
+                if cat == 'flight':
+                    return not x.get('price')
+            except Exception:
+                return True
+            return False
+
+        candidates: list[dict] = []
+        for cat in ['flight','hotel','attractions','food','transport']:
+            for item in by_type.get(cat, []):
+                if isinstance(item, dict) and needs_price(item, cat):
+                    candidates.append({'category': cat, 'item': item})
+
+        if not candidates:
+            return Response({'success': True, 'data': {'updated': 0, 'message': 'No missing prices found'}})
+
+        client = OpenAI(api_key=api_key)
+        system_prompt = (
+            "You are a travel budgeting analyst. For each item, estimate a realistic price in USD for the specified city. "
+            "Rules: return STRICT JSON list under key 'estimates'. Each entry: {category, id, price, averageMeal?, pricePerDay?}.\n"
+            "If category=food -> prefer 'averageMeal'. If attractions -> 'price'. If transport -> 'pricePerDay'. "
+            "Keep prices reasonable; if unknown, best reasonable assumption."
+        )
+        user_payload = {
+            'city': trip.destination,
+            'items': candidates,
+        }
+        comp = client.chat.completions.create(
+            model=(settings.OPENAI_MODEL or 'gpt-4o-mini'),
+            temperature=0.2,
+            messages=[
+                {'role': 'system', 'content': system_prompt},
+                {'role': 'user', 'content': json.dumps(user_payload)}
+            ]
+        )
+        content = comp.choices[0].message.content if comp.choices else '{}'
+        try:
+            estimates = json.loads(content).get('estimates', [])
+        except Exception:
+            estimates = []
+
+        # Index estimates by item id when possible, else by lowercased name
+        idx: dict[tuple, dict] = {}
+        for e in estimates:
+            key = (e.get('category'), str(e.get('id') or '').strip().lower())
+            idx[key] = e
+
+        # Apply updates to TripItems and stages
+        updated = 0
+        items_qs = list(TripItem.objects.filter(trip=trip))
+        for stage in stages:
+            changed = False
+            sel = stage.selected_items or []
+            new_sel = []
+            for it in sel:
+                try:
+                    ident = str(it.get('id') or '').strip().lower()
+                    key = (stage.stage_type, ident)
+                    est = idx.get(key)
+                    if est:
+                        price = est.get('price')
+                        avg = est.get('averageMeal')
+                        pday = est.get('pricePerDay')
+                        if stage.stage_type == 'food' and avg:
+                            it['averageMeal'] = float(avg)
+                            if not it.get('price'):
+                                it['price'] = float(avg)
+                            changed = True; updated += 1
+                        elif stage.stage_type == 'transport' and pday:
+                            it['pricePerDay'] = float(pday)
+                            if not it.get('price'):
+                                it['price'] = float(pday)
+                            changed = True; updated += 1
+                        elif price:
+                            it['price'] = float(price); changed = True; updated += 1
+                except Exception:
+                    pass
+                new_sel.append(it)
+            if changed:
+                stage.selected_items = new_sel
+                stage.save()
+
+        # Sync TripItems prices as well (best-effort by external_id or name)
+        for ti in items_qs:
+            try:
+                ident = (ti.external_id or ti.name or '').strip().lower()
+                for cat in ['flight','hotel','attractions','food','transport']:
+                    est = idx.get((cat, ident))
+                    if not est:
+                        continue
+                    price = est.get('price')
+                    avg = est.get('averageMeal')
+                    pday = est.get('pricePerDay')
+                    if price:
+                        ti.price = float(price)
+                    md = ti.metadata or {}
+                    if avg:
+                        md['averageMeal'] = float(avg)
+                        md.setdefault('price', float(avg))
+                    if pday:
+                        md['pricePerDay'] = float(pday)
+                        md.setdefault('price', float(pday))
+                    ti.metadata = md
+                    ti.save()
+            except Exception:
+                pass
+
+        return Response({'success': True, 'data': {'updated': updated}})
+    except Exception as e:
+        return Response({'success': False, 'error': f'Failed to estimate budget: {str(e)}'}, status=500)

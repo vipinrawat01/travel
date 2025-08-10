@@ -3,6 +3,8 @@ import React, { useState, useEffect } from 'react';
 import { Camera, MapPin, Clock, Star, DollarSign, Plus, Check, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { placesService, type PlaceItem } from '@/services/placesService';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
+import { tripService } from '@/services/tripService';
 
 interface Attraction {
   id: string;
@@ -30,6 +32,10 @@ const AttractionsResults: React.FC<AttractionsResultsProps> = ({
   const [items, setItems] = useState<PlaceItem[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [guideOpen, setGuideOpen] = useState(false);
+  const [guideLoading, setGuideLoading] = useState(false);
+  const [guideError, setGuideError] = useState<string | null>(null);
+  const [guideData, setGuideData] = useState<any | null>(null);
 
   // Rehydrate last generated results for current destination from localStorage
   useEffect(() => {
@@ -45,6 +51,36 @@ const AttractionsResults: React.FC<AttractionsResultsProps> = ({
         setItems(cache.items);
       }
     } catch {}
+  }, []);
+
+  // Preload selected attractions from planning stages and reflect them as selected badges
+  useEffect(() => {
+    const preload = async () => {
+      try {
+        const tid = localStorage.getItem('currentTripId');
+        if (!tid) return;
+        const stages = await tripService.getTripPlanningStages(tid);
+        const attractionsStage = Array.isArray(stages)
+          ? stages.find((s: any) => s.stage_type === 'attractions' && Array.isArray(s.selected_items))
+          : null;
+        if (attractionsStage) {
+          const ids = (attractionsStage.selected_items || []).map((x: any) => x.id).filter(Boolean);
+          setSelectedAttractionsState(ids);
+          // Also ensure items list contains them so they render visible
+          if (Array.isArray(attractionsStage.selected_items) && attractionsStage.selected_items.length > 0) {
+            setItems((cur) => {
+              const base = cur || [];
+              const missing = attractionsStage.selected_items.filter((a: any) => !(base as any[]).some((b: any) => b.id === a.id));
+              return [...missing, ...base];
+            });
+          }
+        }
+      } catch {}
+    };
+    preload();
+    const onRefresh = () => { preload(); };
+    window.addEventListener('itinerary:refresh', onRefresh);
+    return () => window.removeEventListener('itinerary:refresh', onRefresh);
   }, []);
 
   useEffect(() => {
@@ -166,10 +202,33 @@ const AttractionsResults: React.FC<AttractionsResultsProps> = ({
     });
   };
 
+  const openGuide = async (attraction: any) => {
+    try {
+      setGuideOpen(true);
+      setGuideLoading(true);
+      setGuideError(null);
+      setGuideData(null);
+      const planningRaw = localStorage.getItem('tripPlanningData');
+      const planning = planningRaw ? JSON.parse(planningRaw) : {};
+      const city = planning.cityHint || planning.destination || '';
+      const res = await placesService.placeGuide({ name: String(attraction.name || ''), city });
+      if (res && (res as any).success && (res as any).data) {
+        setGuideData((res as any).data);
+      } else {
+        setGuideError('Failed to generate guide');
+      }
+    } catch (e: any) {
+      setGuideError(e?.message || 'Failed to generate guide');
+    } finally {
+      setGuideLoading(false);
+    }
+  };
+
   const handleGenerate = async () => {
     try {
       setLoading(true);
       setError(null);
+      setItems([]);
       const raw = localStorage.getItem('tripPlanningData');
       if (!raw) throw new Error('Missing trip planning data');
       const planning = JSON.parse(raw);
@@ -242,6 +301,7 @@ const AttractionsResults: React.FC<AttractionsResultsProps> = ({
                 isSelected ? 'ring-2 ring-ai-primary ai-glow-secondary' : ''
               }`}
               style={{ animationDelay: `${index * 100}ms` }}
+              onDoubleClick={() => openGuide(attraction)}
             >
               <div className="flex items-start justify-between mb-3">
                 <div className="flex-1">
@@ -309,6 +369,90 @@ const AttractionsResults: React.FC<AttractionsResultsProps> = ({
           </Button>
         </div>
       )}
+
+      <Dialog open={guideOpen} onOpenChange={setGuideOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{guideData?.place?.name || 'Place Guide'}</DialogTitle>
+            <DialogDescription>
+              {guideData?.place?.city ? `${guideData.place.city}${guideData?.place?.country ? ', ' + guideData.place.country : ''}` : ''}
+            </DialogDescription>
+          </DialogHeader>
+          {guideLoading && (
+            <div className="text-sm text-foreground-muted">Generating guide...</div>
+          )}
+          {guideError && (
+            <div className="text-sm text-destructive">{guideError}</div>
+          )}
+          {!guideLoading && !guideError && guideData && (
+            <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
+              {guideData.place?.summary && (
+                <div>
+                  <div className="font-semibold mb-1">Overview</div>
+                  <div className="text-sm text-foreground-muted">{guideData.place.summary}</div>
+                </div>
+              )}
+              {guideData.bestTimes && (
+                <div>
+                  <div className="font-semibold mb-1">Best Times</div>
+                  <div className="text-sm text-foreground-muted">{guideData.bestTimes.overall}</div>
+                  <ul className="mt-2 list-disc pl-5 text-sm text-foreground-muted">
+                    {(guideData.bestTimes.byTimeOfDay || []).slice(0, 6).map((t: any, i: number) => (
+                      <li key={i}><span className="font-medium">{t.time}:</span> {t.whatToExpect}{t.tips ? ` — ${t.tips}` : ''}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {guideData.photoGuide && (
+                <div>
+                  <div className="font-semibold mb-1">Photo Guide</div>
+                  <div className="text-sm text-foreground-muted">Best times: {guideData.photoGuide.bestTimes || '—'}</div>
+                  <ul className="mt-2 list-disc pl-5 text-sm text-foreground-muted">
+                    {(guideData.photoGuide.bestSpots || []).slice(0, 6).map((s: any, i: number) => (
+                      <li key={i}>{s}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {Array.isArray(guideData.highlights) && guideData.highlights.length > 0 && (
+                <div>
+                  <div className="font-semibold mb-1">Highlights</div>
+                  <ul className="list-disc pl-5 text-sm text-foreground-muted">
+                    {guideData.highlights.slice(0, 8).map((h: any, i: number) => (
+                      <li key={i}><span className="font-medium">{h.title}:</span> {h.description}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {guideData.practicalInfo && (
+                <div>
+                  <div className="font-semibold mb-1">Practical Info</div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm text-foreground-muted">
+                    <div>Opening Hours: {guideData.practicalInfo.openingHours || '—'}</div>
+                    <div>Typical Duration: {guideData.practicalInfo.duration || '—'}</div>
+                    <div>Tickets: {guideData.practicalInfo.tickets?.required || 'Unknown'}{guideData.practicalInfo.tickets?.price ? ` • ${guideData.practicalInfo.tickets.price}` : ''}</div>
+                    <div>Buy: {guideData.practicalInfo.tickets?.whereToBuy || '—'}</div>
+                    <div>How to Reach: {guideData.practicalInfo.howToReach || '—'}</div>
+                    <div>Accessibility: {guideData.practicalInfo.accessibility || '—'}</div>
+                    <div>Safety: {guideData.practicalInfo.safety || '—'}</div>
+                    <div>Etiquette: {guideData.practicalInfo.etiquette || '—'}</div>
+                  </div>
+                </div>
+              )}
+              {Array.isArray(guideData.nearby) && guideData.nearby.length > 0 && (
+                <div>
+                  <div className="font-semibold mb-1">Nearby</div>
+                  <ul className="list-disc pl-5 text-sm text-foreground-muted">
+                    {guideData.nearby.slice(0, 6).map((n: any, i: number) => (
+                      <li key={i}><span className="font-medium">{n.name}</span>{n.distance ? ` • ${n.distance}` : ''}{n.whyVisit ? ` — ${n.whyVisit}` : ''}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

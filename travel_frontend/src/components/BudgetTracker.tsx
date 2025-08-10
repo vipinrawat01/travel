@@ -2,6 +2,7 @@
 import React, { useState } from 'react';
 import { DollarSign, TrendingDown, AlertCircle, CheckCircle, X, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { tripService } from '@/services/tripService';
 
 interface BudgetItem {
   category: string;
@@ -29,6 +30,7 @@ const BudgetTracker: React.FC<BudgetTrackerProps> = ({
   initialBudget
 }) => {
   const [removedItems, setRemovedItems] = useState<string[]>([]);
+  const [isEstimating, setIsEstimating] = useState(false);
 
   // Calculate actual costs based on selections
   const flightCost = selectedFlight ? selectedFlight.price : 0;
@@ -135,6 +137,20 @@ const BudgetTracker: React.FC<BudgetTrackerProps> = ({
 
   const optimizationSuggestions = getOptimizationSuggestions();
 
+  const handleEstimate = async () => {
+    try {
+      if (isEstimating) return;
+      setIsEstimating(true);
+      const tripId = localStorage.getItem('currentTripId');
+      if (!tripId || tripId === 'null' || tripId === 'undefined') return;
+      await tripService.estimateBudget(tripId);
+      // Ask the rest of the app to refresh saved stages; Live Itinerary will rehydrate prices via stages/items
+      try { window.dispatchEvent(new Event('itinerary:refresh')); } catch {}
+    } finally {
+      setIsEstimating(false);
+    }
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-center space-x-3 mb-6">
@@ -163,6 +179,12 @@ const BudgetTracker: React.FC<BudgetTrackerProps> = ({
               ${isOverBudget ? overspend : totalSavings}
             </p>
           </div>
+
+        <div className="mt-4 text-center">
+          <Button onClick={handleEstimate} className="ai-button-secondary" disabled={isEstimating}>
+            {isEstimating ? 'Estimating...' : 'Estimate Missing Prices with AI'}
+          </Button>
+        </div>
         </div>
 
         <div className="mt-6">

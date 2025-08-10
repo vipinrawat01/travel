@@ -214,3 +214,9 @@ if _extra_csrf:
     CSRF_TRUSTED_ORIGINS = _default_csrf + [o.strip() for o in _extra_csrf.split(',') if o.strip()]
 else:
     CSRF_TRUSTED_ORIGINS = _default_csrf
+
+# ---------------------- External API Keys ----------------------
+# Expose keys via settings so app code can read consistently without relying on os.environ
+OPENAI_API_KEY = config('OPENAI_API_KEY', default=None)
+OPENAI_MODEL = config('OPENAI_MODEL', default='gpt-4o-mini')
+SERPAPI_KEY = config('SERPAPI_KEY', default=None)

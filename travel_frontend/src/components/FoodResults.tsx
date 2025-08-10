@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { Utensils, MapPin, Clock, Star, DollarSign, Check, Plus, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { placesService, type PlaceItem } from '@/services/placesService';
+import { tripService } from '@/services/tripService';
 
 interface Restaurant {
   id: string;
@@ -45,6 +46,35 @@ const FoodResults: React.FC<FoodResultsProps> = ({
         setItems(cache.items);
       }
     } catch {}
+  }, []);
+
+  // Preload selected restaurants from planning stages and reflect them
+  useEffect(() => {
+    const preload = async () => {
+      try {
+        const tid = localStorage.getItem('currentTripId');
+        if (!tid) return;
+        const stages = await tripService.getTripPlanningStages(tid);
+        const foodStage = Array.isArray(stages)
+          ? stages.find((s: any) => s.stage_type === 'food' && Array.isArray(s.selected_items))
+          : null;
+        if (foodStage) {
+          const ids = (foodStage.selected_items || []).map((x: any) => x.id).filter(Boolean);
+          setSelectedRestaurantsState(ids);
+          if (Array.isArray(foodStage.selected_items) && foodStage.selected_items.length > 0) {
+            setItems((cur) => {
+              const base = cur || [];
+              const missing = foodStage.selected_items.filter((r: any) => !(base as any[]).some((b: any) => b.id === r.id));
+              return [...missing, ...base];
+            });
+          }
+        }
+      } catch {}
+    };
+    preload();
+    const onRefresh = () => { preload(); };
+    window.addEventListener('itinerary:refresh', onRefresh);
+    return () => window.removeEventListener('itinerary:refresh', onRefresh);
   }, []);
 
   useEffect(() => {
@@ -178,6 +208,7 @@ const FoodResults: React.FC<FoodResultsProps> = ({
     try {
       setLoading(true);
       setError(null);
+      setItems([]);
       const raw = localStorage.getItem('tripPlanningData');
       if (!raw) throw new Error('Missing trip planning data');
       const planning = JSON.parse(raw);

@@ -524,7 +524,7 @@ Always return your responses in a structured JSON format that can be easily pars
                     origin_candidates.extend(hubs)
             origin_candidates = unique(origin_candidates)[:6]
 
-            # Try combinations in order (with small date offsets to increase hit rate)
+            # Try combinations in a staged manner to stop as soon as we get success
             last_result: Dict[str, Any] = {}
             from datetime import datetime, timedelta
             try:
@@ -532,35 +532,56 @@ Always return your responses in a structured JSON format that can be easily pars
             except Exception:
                 base_dt = datetime.utcnow() + timedelta(days=14)
             date_offsets = [0, 1, -1, 2, -2]
-            for o in origin_candidates:
-                for d in dest_candidates:
-                    for off in date_offsets:
-                        dep_try = (base_dt + timedelta(days=off)).strftime("%Y-%m-%d")
-                        direct_results = self.flight_search.search_flights(
-                            origin=o,
-                            destination=d,
-                            departure_date=dep_try,
-                            return_date=return_date,
-                            adults=adults,
-                            cabin_class=cabin_class,
-                            country=country,
-                        )
-                        last_result = direct_results
-                        flights = direct_results.get("flights", []) if isinstance(direct_results, dict) else []
-                        if flights:
-                            analysis = self._analyze_flights_simple(flights)
-                            return {
-                                "success": True,
-                                "data": {
-                                    "flights": flights,
-                                    "recommendations": analysis.get("recommendations"),
-                                    "total_flights": analysis.get("total_flights"),
-                                    "price_range": analysis.get("price_range"),
-                                    "summary": analysis.get("summary"),
-                                    "data_source": direct_results.get("data_source", "serpapi"),
-                                },
-                                "raw_response": None,
-                            }
+
+            def _try_search(origins: List[str], destinations: List[str], offsets: List[int]) -> Optional[Dict[str, Any]]:
+                nonlocal last_result
+                for o in origins:
+                    for d in destinations:
+                        for off in offsets:
+                            dep_try = (base_dt + timedelta(days=off)).strftime("%Y-%m-%d")
+                            direct_results = self.flight_search.search_flights(
+                                origin=o,
+                                destination=d,
+                                departure_date=dep_try,
+                                return_date=return_date,
+                                adults=adults,
+                                cabin_class=cabin_class,
+                                country=country,
+                            )
+                            last_result = direct_results
+                            flights = direct_results.get("flights", []) if isinstance(direct_results, dict) else []
+                            if flights:
+                                analysis = self._analyze_flights_simple(flights)
+                                return {
+                                    "success": True,
+                                    "data": {
+                                        "flights": flights,
+                                        "recommendations": analysis.get("recommendations"),
+                                        "total_flights": analysis.get("total_flights"),
+                                        "price_range": analysis.get("price_range"),
+                                        "summary": analysis.get("summary"),
+                                        "data_source": direct_results.get("data_source", "serpapi"),
+                                    },
+                                    "raw_response": None,
+                                }
+                return None
+
+            # Stage 1: exact provided origin and destination only
+            result_stage1 = _try_search([origin], [destination], date_offsets)
+            if result_stage1:
+                return result_stage1
+
+            # Stage 2: provided origin with destination candidates
+            result_stage2 = _try_search([origin], dest_candidates, date_offsets)
+            if result_stage2:
+                return result_stage2
+
+            # Stage 3: alternate origin hubs (excluding the original), with top destination candidates
+            alt_origins = [o for o in origin_candidates if o != origin]
+            top_dest_candidates = dest_candidates[:4] if len(dest_candidates) > 4 else dest_candidates
+            result_stage3 = _try_search(alt_origins, top_dest_candidates, date_offsets)
+            if result_stage3:
+                return result_stage3
 
             # Retry deterministically with arrival_id candidates derived from destination string
             for cand in self._destination_candidates(destination)[:6]:

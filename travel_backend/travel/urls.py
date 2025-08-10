@@ -17,6 +17,8 @@ urlpatterns = [
     path('trips/<uuid:pk>/', views.TripDetailView.as_view(), name='trip_detail'),
     path('trips/<uuid:trip_id>/summary/', views.trip_summary, name='trip_summary'),
     path('trips/<uuid:trip_id>/itinerary/generate/', views.generate_itinerary, name='generate_itinerary'),
+    path('trips/<uuid:trip_id>/itinerary/auto/', views.generate_full_itinerary, name='generate_full_itinerary'),
+    path('trips/<uuid:trip_id>/budget/estimate/', views.estimate_budget, name='estimate_budget'),
     
     # Trip items endpoints
     path('trips/<uuid:trip_id>/items/', views.TripItemListView.as_view(), name='trip_item_list'),
@@ -57,4 +59,5 @@ urlpatterns = [
     path('places/attractions/', views.search_attractions, name='search_attractions'),
     path('places/food/', views.search_food, name='search_food'),
     path('places/transport/', views.search_transport, name='search_transport'),
+    path('places/guide/', views.place_ai_guide, name='place_ai_guide'),
 ]

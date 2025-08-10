@@ -154,6 +154,19 @@ class TripService {
     });
   }
 
+  async generateFullItinerary(tripId: string, params?: { origin?: string; country?: string }): Promise<any> {
+    return this.makeRequest<any>(`${API_BASE_URL}/trips/${tripId}/itinerary/auto/`, {
+      method: 'POST',
+      body: JSON.stringify(params || {}),
+    });
+  }
+
+  async estimateBudget(tripId: string): Promise<any> {
+    return this.makeRequest<any>(`${API_BASE_URL}/trips/${tripId}/budget/estimate/`, {
+      method: 'POST',
+    });
+  }
+
   // Update a trip
   async updateTrip(tripId: string, tripData: Partial<TripData>): Promise<Trip> {
     return this.makeRequest<Trip>(`${API_BASE_URL}/trips/${tripId}/`, {
@@ -218,7 +231,11 @@ class TripService {
 
   // Trip Planning Stage methods
   async getTripPlanningStages(tripId: string): Promise<any[]> {
-    return this.makeRequest<any[]>(`${API_BASE_URL}/trips/${tripId}/planning-stages/`);
+    const resp = await this.makeRequest<any>(`${API_BASE_URL}/trips/${tripId}/planning-stages/`);
+    // Normalize paginated and non-paginated responses
+    if (Array.isArray(resp)) return resp as any[];
+    if (resp && Array.isArray(resp.results)) return resp.results as any[];
+    return [] as any[];
   }
 
   async getTripPlanningStage(tripId: string, stageId: string): Promise<any> {

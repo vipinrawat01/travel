@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { tripService } from '@/services/tripService';
+import { placesService } from '@/services/placesService';
 
 interface ItineraryDay {
   date: string;
@@ -48,6 +49,7 @@ const RealTimeItinerary: React.FC = () => {
   const [currentTime, setCurrentTime] = useState(new Date());
   const [isLive, setIsLive] = useState(false);
   const [activities, setActivities] = useState<ItineraryDay[]>([]);
+  const [isGenerating, setIsGenerating] = useState(false);
 
   // Convert backend itinerary into local ItineraryDay shape
   const fromBackend = (data: any): ItineraryDay[] => {
@@ -245,17 +247,22 @@ const RealTimeItinerary: React.FC = () => {
       try {
         const tripId = localStorage.getItem('currentTripId');
         if (tripId && tripId !== 'null' && tripId !== 'undefined') {
-          // try fetch itinerary; if none, generate
+          // Prefer existing itinerary; only generate if missing
+          setIsGenerating(true);
           const existing = await tripService.getTrip(tripId);
           const existingPlans = (existing as any)?.itinerary?.day_plans;
           if (existingPlans && Array.isArray(existingPlans) && existingPlans.length > 0) {
             if (!cancelled) setActivities(fromBackend((existing as any).itinerary));
           } else {
-            const gen = await tripService.generateItinerary(tripId);
+            const gen = await tripService.generateFullItinerary(tripId);
             if (gen && gen.data) {
               if (!cancelled) setActivities(fromBackend(gen.data));
+              try { window.dispatchEvent(new Event('itinerary:refresh')); } catch {}
+            } else if (!cancelled) {
+              setActivities(initializeActivities());
             }
           }
+          setIsGenerating(false);
         } else {
           if (!cancelled) setActivities(initializeActivities());
         }
@@ -276,12 +283,46 @@ const RealTimeItinerary: React.FC = () => {
 
   const handleRegenerate = async () => {
     try {
+      if (isGenerating) return;
+      setIsGenerating(true);
+      // Clear local caches and notify stages to reset before fresh generation
+      try {
+        localStorage.removeItem('flights_cache_results');
+        localStorage.removeItem('hotels_cache_results');
+        localStorage.removeItem('places_cache_attractions');
+        localStorage.removeItem('places_cache_food');
+        localStorage.removeItem('places_cache_transport');
+      } catch {}
+      try { window.dispatchEvent(new Event('itinerary:clear')); } catch {}
       const tripId = localStorage.getItem('currentTripId');
       if (!tripId || tripId === 'null' || tripId === 'undefined') return;
-      const gen = await tripService.generateItinerary(tripId);
-      if (gen && gen.data) setActivities(fromBackend(gen.data));
+      const gen = await tripService.generateFullItinerary(tripId);
+      if (gen && gen.data) {
+        setActivities(fromBackend(gen.data));
+        try { window.dispatchEvent(new Event('itinerary:refresh')); } catch {}
+      }
     } catch {}
+    finally {
+      setIsGenerating(false);
+    }
   };
+
+  // Optional: refresh itinerary view (without regeneration) when other stages update
+  useEffect(() => {
+    const onRefresh = async () => {
+      const tripId = localStorage.getItem('currentTripId');
+      if (!tripId || tripId === 'null' || tripId === 'undefined') return;
+      try {
+        const existing = await tripService.getTrip(tripId);
+        const existingPlans = (existing as any)?.itinerary?.day_plans;
+        if (existingPlans && Array.isArray(existingPlans) && existingPlans.length > 0) {
+          setActivities(fromBackend((existing as any).itinerary));
+        }
+      } catch {}
+    };
+    window.addEventListener('itinerary:refresh', onRefresh);
+    return () => window.removeEventListener('itinerary:refresh', onRefresh);
+  }, []);
 
   const toggleActivityCompletion = (dayIndex: number, activityId: string) => {
     setActivities(prev => prev.map((day, dIndex) => {
@@ -318,9 +359,16 @@ const RealTimeItinerary: React.FC = () => {
     if (!currentActivity?.actualTime) return;
 
     const [actualHour, actualMinute] = currentActivity.actualTime.split(':').map(Number);
-    const [scheduledHour, scheduledMinute] = currentActivity.time.split(':').map(Number);
+    const parseRange = (t: string) => {
+      const parts = t.split('-').map(s => s.trim());
+      return parts.length >= 2 ? { start: parts[0], end: parts[1] } : { start: t };
+    };
+    const { start, end } = parseRange(currentActivity.time);
+    const [scheduledHour, scheduledMinute] = start.split(':').map(Number);
     
-    const scheduledTimeInMinutes = scheduledHour * 60 + scheduledMinute + parseInt(currentActivity.duration) * 60;
+    const scheduledTimeInMinutes = end
+      ? (() => { const [h, m] = end.split(':').map(Number); return h * 60 + m; })()
+      : (scheduledHour * 60 + scheduledMinute + parseInt(currentActivity.duration) * 60);
     const actualTimeInMinutes = actualHour * 60 + actualMinute;
     const delayInMinutes = actualTimeInMinutes - scheduledTimeInMinutes;
 
@@ -336,21 +384,22 @@ const RealTimeItinerary: React.FC = () => {
               const completedIndex = day.activities.findIndex(a => a.id === completedActivityId);
               
               if (activityIndex > completedIndex && !activity.completed) {
-                const [hour, minute] = activity.time.split(':').map(Number);
+                const pr = parseRange(activity.time);
+                const [hour, minute] = pr.start.split(':').map(Number);
                 const originalTimeInMinutes = hour * 60 + minute;
-                const adjustedTimeInMinutes = originalTimeInMinutes + Math.min(cumulativeAdjustment, 30); // Max 30min adjustment per activity
-                
+                const adjustedTimeInMinutes = originalTimeInMinutes + Math.min(cumulativeAdjustment, 30);
                 const newHour = Math.floor(adjustedTimeInMinutes / 60);
                 const newMinute = adjustedTimeInMinutes % 60;
-                const newTime = `${newHour.toString().padStart(2, '0')}:${newMinute.toString().padStart(2, '0')}`;
-                
-                cumulativeAdjustment = Math.max(0, cumulativeAdjustment - 15); // Reduce adjustment for next activities
-                
-                return {
-                  ...activity,
-                  time: newTime,
-                  estimatedDelay: delayInMinutes
-                };
+                let newTime = `${newHour.toString().padStart(2, '0')}:${newMinute.toString().padStart(2, '0')}`;
+                if (pr.end) {
+                  const [eh, em] = pr.end.split(':').map(Number);
+                  const endMin = eh * 60 + em + Math.min(cumulativeAdjustment, 30);
+                  const newEndH = Math.floor(endMin / 60);
+                  const newEndM = endMin % 60;
+                  newTime = `${newTime} - ${newEndH.toString().padStart(2, '0')}:${newEndM.toString().padStart(2, '0')}`;
+                }
+                cumulativeAdjustment = Math.max(0, cumulativeAdjustment - 15);
+                return { ...activity, time: newTime, estimatedDelay: delayInMinutes };
               }
               return activity;
             })
@@ -435,9 +484,13 @@ const RealTimeItinerary: React.FC = () => {
             <Share2 className="w-4 h-4 mr-2" />
             Share Trip
           </Button>
-          <Button onClick={handleRegenerate} className="ai-button-primary">
+          <Button onClick={handleRegenerate} className="ai-button-primary" disabled={isGenerating}>
             <RotateCcw className="w-4 h-4 mr-2" />
-            Regenerate Itinerary
+            {isGenerating ? 'Generating...' : 'Regenerate Itinerary'}
+          </Button>
+          <Button onClick={handleRegenerate} className="ai-button-secondary" disabled={isGenerating}>
+            <Play className="w-4 h-4 mr-2" />
+            {isGenerating ? 'Generating...' : 'Generate Itinerary'}
           </Button>
         </div>
       </div>

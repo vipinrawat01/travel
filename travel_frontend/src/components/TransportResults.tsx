@@ -3,6 +3,7 @@ import React, { useState } from 'react';
 import { Car, Train, Bus, Bike, MapPin, Clock, DollarSign, Check, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { placesService, type PlaceItem } from '@/services/placesService';
+import { tripService } from '@/services/tripService';
 
 interface Transport {
   id: string;
@@ -44,6 +45,35 @@ const TransportResults: React.FC<TransportResultsProps> = ({
         setItems(cache.items);
       }
     } catch {}
+  }, []);
+
+  // Preload selected transport from planning stages and reflect them
+  React.useEffect(() => {
+    const preload = async () => {
+      try {
+        const tid = localStorage.getItem('currentTripId');
+        if (!tid) return;
+        const stages = await tripService.getTripPlanningStages(tid);
+        const tStage = Array.isArray(stages)
+          ? stages.find((s: any) => s.stage_type === 'transport' && Array.isArray(s.selected_items))
+          : null;
+        if (tStage) {
+          const ids = (tStage.selected_items || []).map((x: any) => x.id).filter(Boolean);
+          setSelectedTransportState(ids);
+          if (Array.isArray(tStage.selected_items) && tStage.selected_items.length > 0) {
+            setItems((cur) => {
+              const base = cur || [];
+              const missing = tStage.selected_items.filter((r: any) => !(base as any[]).some((b: any) => b.id === r.id));
+              return [...missing, ...base];
+            });
+          }
+        }
+      } catch {}
+    };
+    preload();
+    const onRefresh = () => { preload(); };
+    window.addEventListener('itinerary:refresh', onRefresh);
+    return () => window.removeEventListener('itinerary:refresh', onRefresh);
   }, []);
 
   const transportOptions: Transport[] = [
@@ -144,6 +174,7 @@ const TransportResults: React.FC<TransportResultsProps> = ({
     try {
       setLoading(true);
       setError(null);
+      setItems([]);
       const raw = localStorage.getItem('tripPlanningData');
       if (!raw) throw new Error('Missing trip planning data');
       const planning = JSON.parse(raw);

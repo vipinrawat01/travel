@@ -88,8 +88,21 @@ const FlightResults: React.FC<FlightResultsProps> = ({ onFlightSelect, selectedF
       }
     };
     preload();
+    const onRefresh = () => { preload(); };
+    window.addEventListener('itinerary:refresh', onRefresh);
+    return () => window.removeEventListener('itinerary:refresh', onRefresh);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Ensure selectedFlight prop appears in list even if not fetched yet
+  useEffect(() => {
+    if (selectedFlight) {
+      setFlights((cur) => {
+        const exists = cur.some((f) => (f as any).id === (selectedFlight as any).id);
+        return exists ? cur : [selectedFlight as any, ...cur];
+      });
+    }
+  }, [selectedFlight]);
 
   const handleGenerate = async () => {
     if (!searchParams) {
@@ -99,6 +112,8 @@ const FlightResults: React.FC<FlightResultsProps> = ({ onFlightSelect, selectedF
 
     setIsLoading(true);
     setError(null);
+    // Clear current list so UI shows fresh results only when button is clicked
+    setFlights([]);
 
       try {
       console.log('[Flights] Generate clicked. Current searchParams:', searchParams);

@@ -3,6 +3,7 @@ import React, { useEffect, useState } from 'react';
 import { Hotel, Star, MapPin, Wifi, Car, Coffee, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { hotelService, type HotelItem } from '@/services/hotelService';
+import { tripService } from '@/services/tripService';
 
 interface Hotel {
   id: string;
@@ -71,6 +72,32 @@ const HotelResults: React.FC<HotelResultsProps> = ({ onHotelSelect, selectedHote
     } catch {}
   }, []);
 
+  // Preload previously selected hotel from backend so it persists between visits and refreshes
+  useEffect(() => {
+    const preload = async () => {
+      try {
+        const tripId = localStorage.getItem('currentTripId');
+        if (!tripId) return;
+        const stages = await tripService.getTripPlanningStages(tripId);
+        const hotelStage = Array.isArray(stages)
+          ? stages.find((s: any) => s.stage_type === 'hotel' && Array.isArray(s.selected_items) && s.selected_items.length > 0)
+          : null;
+        if (hotelStage) {
+          const prevHotel = hotelStage.selected_items[0];
+          onHotelSelect(prevHotel);
+          setHotels((cur) => {
+            const exists = cur.some((h) => (h as any).id === prevHotel.id);
+            return exists ? cur : [prevHotel, ...cur];
+          });
+        }
+      } catch {}
+    };
+    preload();
+    const onRefresh = () => { preload(); };
+    window.addEventListener('itinerary:refresh', onRefresh);
+    return () => window.removeEventListener('itinerary:refresh', onRefresh);
+  }, [onHotelSelect]);
+
   const getCategoryColor = (category: string) => {
     switch (category) {
       case 'luxury': return 'text-ai-primary';
@@ -91,6 +118,7 @@ const HotelResults: React.FC<HotelResultsProps> = ({ onHotelSelect, selectedHote
     try {
       setLoading(true);
       setError(null);
+      setHotels([]);
 
       // Try to read trip planning data for destination and dates
       const planningRaw = localStorage.getItem('tripPlanningData');
