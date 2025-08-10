@@ -256,3 +256,204 @@ npm run dev
 ## License
 Proprietary (update as needed).
 
+
+---
+
+## Deep Dive Guide
+
+This section explains the project in depth: architecture, data model, request flows, key components, external integrations, and how the end-to-end planning experience is built.
+
+### Table of contents
+- Architecture overview
+- Backend internals (Django + DRF)
+- AI and external data integrations
+- Frontend internals (React + Vite + shadcn/ui)
+- End-to-end user flows (Auth, Planning, Results, Save)
+- Planning stages lifecycle and persistence
+- Caching and client-side data
+- Configuration and environment variables
+- Deployment notes (prod hardening)
+- Troubleshooting cheatsheet
+
+### Architecture overview
+
+```mermaid
+graph LR
+  subgraph Browser
+    UI[React + Vite + TS + shadcn/ui]
+  end
+
+  subgraph API[Django REST API]
+    AUTH[Token Auth]
+    CRUD[Trips/Items/Budget/Itinerary]
+    STAGES[Planning Stages]
+    LIVE[Live Itinerary]
+    AIEND[AI Endpoints]
+    GEO[Geoapify Places]
+    EVENTS[Ticketmaster Events]
+  end
+
+  DB[(PostgreSQL/SQLite)]
+
+  UI -->|Authorization: Token <token>| AUTH
+  AUTH --> CRUD
+  AUTH --> STAGES
+  AUTH --> LIVE
+  AIEND -->|SerpAPI + OpenAI| EXT1[(Flights/Hotels)]
+  GEO -->|Geoapify| EXT2[(Places)]
+  EVENTS -->|Ticketmaster| EXT3[(Events)]
+  API --> DB
+```
+
+- Frontend handles UX, auth token storage, and calls the API via `src/services/*`.
+- Backend authenticates every non-auth request with DRF TokenAuth, persists trips and selections, and orchestrates AI/data services.
+- External services:
+  - Flights: SerpAPI Google Flights via `FlightAIAgent` (with optional OpenAI reasoning) in `travel_backend/travel/flight_agent.py`.
+  - Hotels: SerpAPI Google Hotels via `HotelAIAgent` in `travel_backend/travel/hotel_agent.py`.
+  - Places: Geoapify Places for attractions/food/transport in `views.py`.
+  - Events: Ticketmaster Discovery API.
+
+### Backend internals (Django + DRF)
+
+- Models (`travel/models.py`):
+  - `UserProfile`: user details and preferences.
+  - `Trip`: title, destination, dates, budget, style, status.
+  - `TripItem`: selected items across categories (flight, hotel, attraction, restaurant, transport, activity, event), metadata stored as JSON.
+  - `TripBudget`: totals plus computed `remaining_budget` and `spent_percentage` properties.
+  - `TripItinerary`: `day_plans` JSON for generated plans.
+  - `TripPlanningStage`: stage_type (flight, hotel, attractions, food, transport), `selected_items`, `status`, `ai_options`, `stage_preferences`.
+  - `LiveItineraryItem`: granular per-day actionable items with times and completion state.
+
+- Authentication:
+  - Token Authentication (`rest_framework.authtoken`).
+  - Endpoints: `POST /api/auth/register/`, `POST /api/auth/login/`, `POST /api/auth/logout/`.
+  - Most other endpoints require `Authorization: Token <token>`.
+
+- Core endpoints (`travel/urls.py` → `travel/views.py`):
+  - Trips: `GET|POST /api/trips/`, `GET|PUT|PATCH|DELETE /api/trips/{id}/`.
+  - Items: `GET|POST /api/trips/{trip_id}/items/`, item detail, and `POST /api/trips/{trip_id}/items/{item_id}/select/`.
+  - Budget: `GET|PUT /api/trips/{trip_id}/budget/`.
+  - Itinerary: `GET|PUT /api/trips/{trip_id}/itinerary/`, `POST /api/trips/{trip_id}/itinerary/generate/` and `POST /api/trips/{trip_id}/itinerary/auto/` (multi-agent orchestration).
+  - Planning stages: list/detail + progress batch update, per-stage update/complete/skip endpoints.
+  - Live itinerary: group by day, CRUD for items, complete/skip, update times.
+
+- Itinerary generation highlights:
+  - `generate_full_itinerary`: orchestrates AI for flights/hotels (SerpAPI/OpenAI), discovers places (Geoapify), optionally events (Ticketmaster), persists `TripItem`s and `TripPlanningStage`s, then builds `TripItinerary.day_plans` with an OpenAI prompt (falls back to deterministic layout if LLM disabled/unavailable).
+  - `generate_itinerary`: builds schedules from existing selections (TripItems/Stages) without external calls.
+
+### AI and external data integrations
+
+- Flights (`flight_agent.py`):
+  - Uses SerpAPI Google Flights via `FlightSearchTool`. Tries localized `gl` candidates; processes results; provides recommendations.
+  - Async facade `search_and_recommend_flights` returns `flights[]`, `recommendations`, `summary`.
+
+- Hotels (`hotel_agent.py`):
+  - Uses SerpAPI Google Hotels via `HotelSearchTool`. Extracts normalized fields (id, name, price, rating, location, distance, amenities, image, priceCategory).
+  - Async facade `search_and_recommend_hotels` returns trimmed hotel items for the frontend.
+
+- Places (`views.py`):
+  - `POST /api/places/attractions/`: Geoapify with robust geocoding and category selection.
+  - `POST /api/places/food/`: Geoapify `catering.*` categories.
+  - `POST /api/places/transport/`: multiple fallbacks (place filters, circle radius) to maximize results.
+  - `POST /api/places/guide/`: OpenAI-only concise JSON “place guide” (overview, best times, highlights, practical info, nearby).
+
+- Events (`views.py`):
+  - `GET /api/events/search/`: Ticketmaster Discovery API (optional; key required).
+
+### Frontend internals (React + Vite + shadcn/ui)
+
+- Auth and state:
+  - `AuthContext.tsx` keeps `user`, `isAuthenticated`, and error/loading state.
+  - Token persisted in `localStorage` under `authToken` via `authService.ts`.
+  - Signup does NOT auto-login (token returned by backend is ignored on signup); login stores token and loads profile.
+
+- Services (`src/services/*`):
+  - `authService.ts`: login/signup/logout/profile.
+  - `tripService.ts`: trips, items, planning stages, itinerary orchestration.
+  - `flightService.ts`, `hotelService.ts`, `placesService.ts`: AI/places endpoints.
+
+- Major components:
+  - `OnboardingScreen`: entry capture.
+  - `TripPlanning`: creates a trip, seeds planning stages, and stores planning context in `localStorage`.
+  - `TripResults`: orchestrates 6 tabs (Itinerary, Flights, Hotels, Places, Food, Transport) and maintains selections; syncs with planning stages.
+  - Stage components: `FlightResults`, `HotelResults`, `AttractionsResults` (places), `FoodResults`, `TransportResults`.
+    - Note: stage components no longer contain mock/seed lists; results are fetched via the Generate button or rehydrated from cache/stages.
+  - `RealTimeItinerary`: shows the generated day-by-day plan; triggers a fresh generation if none exist for the current trip (limited fallback mock if no trip).
+  - `BudgetTracker`, `WeatherInsights`, `EventsResults`, `FinalItinerary` (static showcase), `ProfilePage`.
+
+- UX notifications
+  - Toasts (`components/ui/toaster.tsx` + `hooks/use-toast.ts`): used for login/signup success/failure and can be reused for other flows.
+
+### End-to-end user flows
+
+- Authentication
+  1) Signup → success toast → redirect to Login.
+  2) Login → success toast → redirect to Home (`/`).
+  3) Wrong credentials → error toast with backend message.
+
+- Planning
+  1) Onboarding or “AI Planner” opens `TripPlanning`.
+  2) Submit creates a `Trip` and initializes 5 `TripPlanningStage`s (pending) then emits an event to open results.
+  3) In `TripResults`, each stage tab has a Generate CTA to fetch items (AI/Geoapify). Selections are saved into planning stages.
+  4) Save Complete Trip persists all selected items as `TripItem`s and syncs stages.
+
+- Itinerary
+  - `RealTimeItinerary` loads existing `TripItinerary`; if missing, calls `POST /itinerary/auto/` to create it. Live mode can adjust times visually on completion.
+
+### Planning stages lifecycle and persistence
+
+- The backend `TripPlanningStage` stores:
+  - `stage_type`: one of `flight|hotel|attractions|food|transport`.
+  - `status`: `pending|in_progress|completed|skipped`.
+  - `selected_items`: the full objects selected in the UI (lightweight JSON, not strict schema).
+  - `ai_options`, `stage_preferences`, `notes`: optional metadata.
+
+- Frontend behavior:
+  - When a user selects items, the stage is updated via `POST /planning-stages/{stage_type}/update/` with `selected_items` and a computed `status`.
+  - If a `tripId` is not yet present (edge flow), selections are stored locally under `pendingSelections` and pushed once a trip is saved.
+  - The UI rehydrates stage selections on mount and on `window` events (`itinerary:refresh`).
+
+### Caching and client-side data
+
+- `localStorage` keys used by the frontend:
+  - `authToken`: DRF token after login.
+  - `tripPlanningData`: last planning form submission with `cityHint` and `countryHint` (used by searches).
+  - `currentTripId`: working trip id during planning.
+  - `hotels_cache_results`, `places_cache_attractions`, `places_cache_food`, `places_cache_transport`: last-generated lists for quick rehydrate on tab switches.
+  - `pendingSelections`: ephemeral stage selections when no trip id yet.
+
+### Configuration and environment variables
+
+- Backend (`travel_backend/.env`):
+  - `DJANGO_SECRET_KEY`, `DJANGO_DEBUG`, `ALLOWED_HOSTS`
+  - `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT`
+  - `OPENAI_API_KEY`, `OPENAI_MODEL` (defaults to `gpt-4o-mini`)
+  - `SERPAPI_KEY`
+  - `GEOAPIFY_API_KEY`
+  - `TICKETMASTER_API_KEY` (optional)
+
+- Frontend (`travel_frontend/.env`):
+  - `VITE_API_BASE_URL` (defaults to `http://localhost:8000/api` when unset)
+
+### Deployment notes (prod hardening)
+
+- Move all secrets to environment variables (already supported in settings).
+- Configure CORS and CSRF origins for your deployed domains.
+- Ensure DB is Postgres in production; run migrations before rollout.
+- If OpenAI/SerpAPI keys are missing, AI search will be disabled/fallbacks used; design your UX accordingly.
+
+### Troubleshooting cheatsheet
+
+- 401/403 on API calls
+  - Ensure token is present in `localStorage` and sent as `Authorization: Token <token>`.
+  - Verify CORS/CSRF configuration and `ALLOWED_HOSTS`.
+
+- “No results found” for places/hotels
+  - Check `GEOAPIFY_API_KEY` or `SERPAPI_KEY` and network egress policies.
+  - Stage components require clicking Generate; mock seed lists were removed.
+
+- Itinerary not generating
+  - Confirm `currentTripId` exists; check logs for `generate_full_itinerary` errors; ensure OpenAI key is present for AI itinerary.
+
+- Flight/Hotel AI errors
+  - Confirm both `OPENAI_API_KEY` and `SERPAPI_KEY` are configured. The agents will log attempts and fallbacks.
