@@ -4,9 +4,9 @@ An AI-assisted travel planning application with a Django REST API backend and a 
 
 ### Highlights
 - **Backend**: Django 5, Django REST Framework, Token auth, PostgreSQL
-- **AI/Agents**: LangChain + OpenAI + SerpAPI (Google Flights/Hotels)
+- **AI/Agents**: Multi‑agent system (LangChain + OpenAI + SerpAPI + Geoapify + Ticketmaster)
 - **Frontend**: React 18, Vite, TypeScript, shadcn/ui, React Router
-- **Features**: Auth, Trip planning workflow, Flight/Hotel AI search, Budgeting, Itinerary (including live items)
+- **Features**: Auth, Trip planning workflow, Multi‑agent flight/hotel search, Places & events discovery, AI budgeting, Live itinerary
 
 ---
 
@@ -158,6 +158,50 @@ graph LR
   - Hotels: SerpAPI Google Hotels via `HotelAIAgent` in `travel_backend/travel/hotel_agent.py`.
   - Places: Geoapify Places for attractions/food/transport in `views.py`.
   - Events: Ticketmaster Discovery API.
+
+### Multi‑Agent Architecture
+
+This app uses a modular multi‑agent approach, where independent agents/tools handle different parts of trip planning and hand results to an orchestrator that composes the final plan.
+
+Agents and their roles:
+- **Orchestrator**: `generate_full_itinerary` in `travel/views.py`. Coordinates all agents, aggregates results, persists data, and composes the final itinerary.
+- **FlightAIAgent**: `travel/flight_agent.py`. Searches flights via SerpAPI Google Flights and returns normalized options + recommendations.
+- **HotelAIAgent**: `travel/hotel_agent.py`. Searches hotels via SerpAPI Google Hotels, normalizes fields, and provides recommendations.
+- **Places Agent (Geoapify)**: functions in `travel/views.py` (`search_attractions`, `search_food`, `search_transport`). Finds attractions, food, and transport near destination.
+- **Events Agent (Ticketmaster)**: `search_events` in `travel/views.py`. Enriches plan with local events where available.
+- **Itinerary Composer**: OpenAI call in `generate_full_itinerary` creates a day‑by‑day schedule from candidate items. Falls back to deterministic planner if LLM unavailable.
+- **Budget Estimator Agent**: `estimate_budget` in `travel/views.py`. Uses OpenAI to estimate missing prices for selected food/attractions/transport; updates stages and `TripItem`s.
+- **Persistence Agent**: CRUD of `Trip`, `TripItem`, and `TripPlanningStage` in `views.py`/serializers.
+
+Agent hand‑offs (simplified):
+
+```mermaid
+sequenceDiagram
+  participant UI
+  participant Orchestrator
+  participant FlightAgent
+  participant HotelAgent
+  participant Places
+  participant Events
+  participant Composer
+  participant BudgetAgent
+  participant DB
+
+  UI->>Orchestrator: POST /itinerary/auto (trip_id)
+  Orchestrator->>FlightAgent: Search flights
+  Orchestrator->>HotelAgent: Search hotels
+  Orchestrator->>Places: Attractions/Food/Transport
+  Orchestrator->>Events: Local events (optional)
+  Orchestrator->>Composer: Build day-by-day plan
+  Composer-->>Orchestrator: day_plans
+  Orchestrator->>DB: Persist TripItems, Stages, Itinerary
+  UI->>BudgetAgent: POST /budget/estimate (when requested)
+  BudgetAgent->>DB: Update selected_items & TripItems with prices
+```
+
+Observability (logs):
+- Itinerary orchestration: logs prefixed with `[itinerary:auto]` detail each step and errors without failing the request.
+- Budget estimation: logs prefixed with `[budget:estimate]` include candidate counts, OpenAI response sizes, estimate counts, and updates applied.
 
 ---
 
