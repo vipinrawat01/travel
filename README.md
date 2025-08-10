@@ -221,44 +221,6 @@ See `travel_frontend/.env.example`. By default, services use `http://localhost:8
 
 ---
 
-## Common commands
-
-Backend (Linux/macOS):
-```bash
-cd travel_backend
-source .venv/bin/activate
-python manage.py migrate
-python manage.py runserver
-```
-
-Frontend:
-```bash
-cd travel_frontend
-npm install
-npm run dev
-```
-
----
-
-## Deployment notes
-- Backend: configure environment variables, run migrations, and serve via gunicorn/uvicorn behind Nginx or a platform (Render/Heroku/etc.). Ensure `ALLOWED_HOSTS`, CORS, and database are set for production. Configure static files.
-- Frontend: `npm run build` produces `dist/`. Host via any static host or behind the same domain as the API.
-
----
-
-## Troubleshooting
-- 401/403 from API: ensure you include `Authorization: Token <token>` after login/signup. Confirm CORS and CSRF configuration for your origin.
-- AI search errors: verify `OPENAI_API_KEY` and `SERPAPI_KEY`. Network firewalls may block external calls.
-- DB errors: verify Postgres connectivity and credentials; apply migrations.
-
----
-
-## License
-Proprietary (update as needed).
-
-
----
-
 ## Deep Dive Guide
 
 This section explains the project in depth: architecture, data model, request flows, key components, external integrations, and how the end-to-end planning experience is built.
@@ -457,3 +419,25 @@ graph LR
 
 - Flight/Hotel AI errors
   - Confirm both `OPENAI_API_KEY` and `SERPAPI_KEY` are configured. The agents will log attempts and fallbacks.
+
+
+
+
+## Deployment notes
+- Backend: configure environment variables, run migrations, and serve via gunicorn/uvicorn behind Nginx or a platform (Render/Heroku/etc.). Ensure `ALLOWED_HOSTS`, CORS, and database are set for production. Configure static files.
+- Frontend: `npm run build` produces `dist/`. Host via any static host or behind the same domain as the API.
+
+---
+
+## Troubleshooting
+- 401/403 from API: ensure you include `Authorization: Token <token>` after login/signup. Confirm CORS and CSRF configuration for your origin.
+- AI search errors: verify `OPENAI_API_KEY` and `SERPAPI_KEY`. Network firewalls may block external calls.
+- DB errors: verify Postgres connectivity and credentials; apply migrations.
+
+---
+
+## License
+Proprietary (update as needed).
+
+
+---
