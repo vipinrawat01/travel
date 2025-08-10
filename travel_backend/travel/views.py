@@ -23,6 +23,9 @@ import json
 from openai import OpenAI
 from django.conf import settings
 import time
+from functools import lru_cache
+import logging
+from django.test import RequestFactory
 
 # Authentication Views
 @api_view(['POST'])
@@ -875,12 +878,41 @@ def _get_geoapify_key(request) -> str:
     return env_key or body_key or query_key or '0c2d35c01c5c4a17a1ec30454a231ef4'
 
 
+def _http_get_json(url: str, timeout: tuple[int, int] = (8, 30), max_retries: int = 2, backoff: float = 0.75):
+    """HTTP GET with retries/backoff that returns parsed JSON or raises.
+    timeout: (connect_timeout, read_timeout)
+    """
+    for attempt in range(max_retries + 1):
+        try:
+            r = requests.get(url, timeout=timeout)
+            r.raise_for_status()
+            return r.json()
+        except (requests.ReadTimeout, requests.Timeout) as e:
+            if attempt < max_retries:
+                sleep_s = backoff * (2 ** attempt)
+                logging.warning("[net] timeout %s on %s (attempt %s/%s) -> sleeping %.2fs", type(e).__name__, url, attempt + 1, max_retries + 1, sleep_s)
+                time.sleep(sleep_s)
+                continue
+            logging.error("[net] timeout final on %s: %s", url, e)
+            raise
+        except requests.HTTPError as e:
+            # Don't retry on HTTP status errors by default
+            logging.error("[net] HTTP error on %s: %s %s", url, r.status_code if 'r' in locals() else '?', e)
+            raise
+        except Exception as e:
+            if attempt < max_retries:
+                sleep_s = backoff * (2 ** attempt)
+                logging.warning("[net] error %s on %s (attempt %s/%s) -> sleeping %.2fs", type(e).__name__, url, attempt + 1, max_retries + 1, sleep_s)
+                time.sleep(sleep_s)
+                continue
+            logging.error("[net] error final on %s: %s", url, e)
+            raise
+
+@lru_cache(maxsize=128)
 def _geoapify_geocode(destination: str, api_key: str):
     def _do_request(params: dict):
         url = f'https://api.geoapify.com/v1/geocode/search?{urlencode(params)}'
-        r = requests.get(url, timeout=15)
-        r.raise_for_status()
-        return r.json()
+        return _http_get_json(url, timeout=(8, 30), max_retries=2)
 
     try:
         dest = (destination or '').strip()
@@ -932,9 +964,7 @@ def _geoapify_places(lat: float, lon: float, categories: str, api_key: str, limi
     if name:
         params['name'] = name
     url = f'https://api.geoapify.com/v2/places?{urlencode(params)}'
-    r = requests.get(url, timeout=20)
-    r.raise_for_status()
-    return r.json()
+    return _http_get_json(url, timeout=(8, 35), max_retries=2)
 
 
 def _km_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -947,6 +977,7 @@ def _km_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return R * c
 
 
+@lru_cache(maxsize=256)
 def _geoapify_city_place_id(destination: str, api_key: str) -> str | None:
     """Get a city-level place_id for use with filter=place:... specifically.
     Uses Geoapify geocoding with type=city to avoid address-level ids.
@@ -954,9 +985,7 @@ def _geoapify_city_place_id(destination: str, api_key: str) -> str | None:
     try:
         params = {'text': destination, 'type': 'city', 'limit': 1, 'apiKey': api_key}
         url = f'https://api.geoapify.com/v1/geocode/search?{urlencode(params)}'
-        r = requests.get(url, timeout=10)
-        r.raise_for_status()
-        data = r.json()
+        data = _http_get_json(url, timeout=(8, 25), max_retries=1)
         features = data.get('features', [])
         if not features:
             return None
@@ -991,6 +1020,7 @@ def _extract_english_name(props: dict) -> str | None:
     return None
 
 
+@lru_cache(maxsize=256)
 def _geoapify_boundary_city_place_ids(destination: str, api_key: str) -> list[str]:
     """Use Boundaries API to fetch city-level place_ids that can be used in filter=place:... queries."""
     try:
@@ -1002,9 +1032,7 @@ def _geoapify_boundary_city_place_ids(destination: str, api_key: str) -> list[st
             'apiKey': api_key,
         }
         url = f'https://api.geoapify.com/v1/boundaries?{urlencode(params)}'
-        r = requests.get(url, timeout=12)
-        r.raise_for_status()
-        data = r.json()
+        data = _http_get_json(url, timeout=(8, 25), max_retries=1)
         pids: list[str] = []
         for feat in (data.get('features') or []):
             props = feat.get('properties') or {}
@@ -1644,6 +1672,9 @@ def generate_itinerary(request, trip_id):
     return Response({'success': True, 'data': ser.data})
 
 
+logger = logging.getLogger(__name__)
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def generate_full_itinerary(request, trip_id):
@@ -1655,6 +1686,7 @@ def generate_full_itinerary(request, trip_id):
     - Persists TripItems (selected), planning stages, and TripItinerary
     """
     try:
+        logger.info("[itinerary:auto] start trip_id=%s user=%s", str(trip_id), getattr(request.user, 'username', 'unknown'))
         from .flight_agent import get_flight_agent
         from .hotel_agent import get_hotel_agent
     except Exception:
@@ -1666,6 +1698,7 @@ def generate_full_itinerary(request, trip_id):
         start = trip.start_date
         end = trip.end_date if trip.end_date >= trip.start_date else trip.start_date
         num_days = (end - start).days + 1
+        logger.info("[itinerary:auto] trip loaded title=%s destination=%s dates=%s->%s days=%s", trip.title, trip.destination, start, end, num_days)
 
         body = request.data or {}
         origin = body.get('origin') or ''
@@ -1673,6 +1706,7 @@ def generate_full_itinerary(request, trip_id):
 
         # Geo context for destination
         geo = _geoapify_geocode(trip.destination, _get_geoapify_key(request)) or {}
+        logger.info("[itinerary:auto] geo context: %s", {k: geo.get(k) for k in ['city','country','lat','lon','place_id']})
         dest_country = (geo.get('country') or '').lower() or None
 
         # 1) Flights
@@ -1702,7 +1736,8 @@ def generate_full_itinerary(request, trip_id):
                 if flights:
                     # Best value first
                     selected_flight = flights[0]
-        except Exception:
+        except Exception as e:
+            logger.exception("[itinerary:auto] flight agent failed: %s", e)
             selected_flight = None
         if not selected_flight:
             # Fabricate a plausible flight
@@ -1745,7 +1780,8 @@ def generate_full_itinerary(request, trip_id):
                 hotels = (res or {}).get('data', {}).get('hotels') or []
                 if hotels:
                     selected_hotel = hotels[0]
-        except Exception:
+        except Exception as e:
+            logger.exception("[itinerary:auto] hotel agent failed: %s", e)
             selected_hotel = None
         if not selected_hotel:
             selected_hotel = {
@@ -1766,23 +1802,33 @@ def generate_full_itinerary(request, trip_id):
             if not geo:
                 return []
             try:
+                logger.info("[itinerary:auto] geoapify places categories=%s limit=%s radius=%s", categories, limit, radius_m)
                 raw = _geoapify_places(geo['lat'], geo['lon'], categories, api_key, limit=limit, radius_m=radius_m, name=None, place_id=geo.get('place_id'))
-            except requests.HTTPError:
+            except requests.HTTPError as http_err:
+                logger.warning("[itinerary:auto] geoapify place: HTTPError (place filter), falling back to circle: %s", http_err)
                 raw = _geoapify_places(geo['lat'], geo['lon'], categories, api_key, limit=limit, radius_m=radius_m, name=None, place_id=None)
+            except Exception as e:
+                logger.exception("[itinerary:auto] geoapify place fetch failed: %s", e)
+                return []
             items = []
             for f in raw.get('features', []) or []:
                 p = f.get('properties') or {}
-                items.append({
-                    'id': str(p.get('place_id') or p.get('osm_id') or p.get('gid') or p.get('datasource', {}).get('raw', {}).get('id')),
-                    'name': p.get('name') or p.get('address_line1') or 'Unknown',
-                    'type': (p.get('categories') or [p.get('category') or ''])[0],
-                    'price': 0,
-                    'duration': '1-2 hours',
-                    'address': p.get('formatted'),
-                    'lat': p.get('lat') or (f.get('geometry', {}).get('coordinates', [None, None])[1]),
-                    'lon': p.get('lon') or (f.get('geometry', {}).get('coordinates', [None, None])[0]),
-                    'bestTime': _best_time_for_category((p.get('categories') or [p.get('category') or ''])[0]),
-                })
+                try:
+                    items.append({
+                        'id': str(p.get('place_id') or p.get('osm_id') or p.get('gid') or p.get('datasource', {}).get('raw', {}).get('id')),
+                        'name': p.get('name') or p.get('address_line1') or 'Unknown',
+                        'type': (p.get('categories') or [p.get('category') or ''])[0],
+                        'price': 0,
+                        'duration': '1-2 hours',
+                        'address': p.get('formatted'),
+                        'lat': p.get('lat') or (f.get('geometry', {}).get('coordinates', [None, None])[1]),
+                        'lon': p.get('lon') or (f.get('geometry', {}).get('coordinates', [None, None])[0]),
+                        'bestTime': _best_time_for_category((p.get('categories') or [p.get('category') or ''])[0]),
+                    })
+                except Exception as map_err:
+                    logger.warning("[itinerary:auto] geoapify place map error: %s", map_err)
+                    continue
+            logger.info("[itinerary:auto] geoapify places ok categories=%s count=%s", categories, len(items))
             return items
 
         attractions = try_places('tourism.attraction', limit=24)
@@ -1792,19 +1838,23 @@ def generate_full_itinerary(request, trip_id):
         # 4) Events (best-effort)
         events_list = []
         try:
-            req = request
-            # Monkey param injection for internal call
-            class Q: pass
-            req.GET = req.GET.copy()
-            req.GET._mutable = True
-            req.GET['destination'] = trip.destination
-            req.GET['start_date'] = str(start)
-            req.GET['end_date'] = str(end)
+            rf = RequestFactory()
+            req = rf.get(
+                '/api/events/search/',
+                {
+                    'destination': trip.destination,
+                    'start_date': str(start),
+                    'end_date': str(end),
+                },
+            )
+            # Preserve user for IsAuthenticated
+            req.user = request.user
             resp = search_events(req)
-            data = getattr(resp, 'data', None) or getattr(resp, 'data', {})
+            data = getattr(resp, 'data', None) or {}
             if isinstance(data, dict) and data.get('success'):
                 events_list = data.get('data', {}).get('events', [])
-        except Exception:
+        except Exception as e:
+            logger.warning("[itinerary:auto] events fetch failed: %s", e)
             events_list = []
 
         # 5) Persist TripItems as selected for core categories
@@ -1821,15 +1871,16 @@ def generate_full_itinerary(request, trip_id):
                     metadata=metadata,
                     is_selected=True,
                 )
-            except Exception:
-                pass
+            except Exception as create_err:
+                logger.exception("[itinerary:auto] add_item failed type=%s name=%s: %s", item_type, name, create_err)
 
         # Clear and replace selected items to persist the generated plan
         try:
             # Remove previous generated items to avoid duplicates
-            TripItem.objects.filter(trip=trip).delete()
-        except Exception:
-            pass
+            deleted, _ = TripItem.objects.filter(trip=trip).delete()
+            logger.info("[itinerary:auto] cleared previous items count=%s", deleted)
+        except Exception as del_err:
+            logger.warning("[itinerary:auto] failed clearing items: %s", del_err)
         if selected_flight:
             add_item('flight', selected_flight.get('airline') or selected_flight.get('name') or 'Flight', float(selected_flight.get('price') or 0), str(selected_flight.get('id') or ''), selected_flight)
         if selected_hotel:
@@ -1866,8 +1917,8 @@ def generate_full_itinerary(request, trip_id):
                     stage.save()
             # Also push selected items into TripItem model as selected for each stage
             # (Already done above) Ensures other views render selections immediately
-        except Exception:
-            pass
+        except Exception as stage_err:
+            logger.warning("[itinerary:auto] failed to sync planning stages: %s", stage_err)
 
         # 6) Build detailed time-blocked itinerary (OpenAI-first with de-duplication)
         def hhmm(h: int, m: int = 0) -> str:
@@ -1939,7 +1990,8 @@ def generate_full_itinerary(request, trip_id):
                 ai = json.loads(content)
                 if isinstance(ai, dict) and isinstance(ai.get('day_plans'), list) and len(ai['day_plans']) >= 1:
                     ai_plan = ai['day_plans']
-        except Exception:
+        except Exception as ai_err:
+            logger.warning("[itinerary:auto] OpenAI plan generation failed: %s", ai_err)
             ai_plan = None
 
         used_titles: set[str] = set()
@@ -2117,8 +2169,10 @@ def generate_full_itinerary(request, trip_id):
         itinerary.save()
 
         ser = TripItinerarySerializer(itinerary)
+        logger.info("[itinerary:auto] success trip_id=%s activities_days=%s", str(trip_id), len(day_plans))
         return Response({'success': True, 'data': ser.data})
     except Exception as e:
+        logger.exception("[itinerary:auto] unhandled error for trip_id=%s: %s", str(trip_id), e)
         return Response({'success': False, 'error': f'Failed to generate full itinerary: {str(e)}'}, status=500)
 
 
@@ -2130,6 +2184,7 @@ def estimate_budget(request, trip_id):
     """
     try:
         trip = get_object_or_404(Trip, id=trip_id, user=request.user)
+        logger.info("[budget:estimate] start trip_id=%s user=%s destination=%s", str(trip_id), getattr(request.user, 'username', 'unknown'), trip.destination)
         api_key = settings.OPENAI_API_KEY or os.getenv('OPENAI_API_KEY')
         if not api_key:
             return Response({'success': False, 'error': 'OPENAI_API_KEY not configured'}, status=500)
@@ -2137,6 +2192,16 @@ def estimate_budget(request, trip_id):
         # Gather selected stage items
         stages = list(TripPlanningStage.objects.filter(trip=trip))
         by_type = {s.stage_type: (s.selected_items or []) for s in stages}
+        try:
+            logger.info("[budget:estimate] stage selections counts: %s", {k: len(v or []) for k, v in by_type.items()})
+        except Exception:
+            pass
+
+        # Destination context (city/country) for better estimates
+        geo_ctx = _geoapify_geocode(trip.destination, _get_geoapify_key(request)) or {}
+        city = geo_ctx.get('city') or trip.destination
+        country = geo_ctx.get('country') or ''
+        logger.info("[budget:estimate] geo ctx city=%s country=%s", city, country)
 
         # Build payload of items missing/zero price
         def needs_price(x: dict, cat: str) -> bool:
@@ -2159,45 +2224,95 @@ def estimate_budget(request, trip_id):
         for cat in ['flight','hotel','attractions','food','transport']:
             for item in by_type.get(cat, []):
                 if isinstance(item, dict) and needs_price(item, cat):
-                    candidates.append({'category': cat, 'item': item})
+                    candidates.append({
+                        'category': cat,
+                        'id': str(item.get('id') or '').strip(),
+                        'name': str(item.get('name') or '').strip(),
+                        'address': str(item.get('address') or '').strip(),
+                        'type': str(item.get('type') or '').strip(),
+                        'cuisine': str(item.get('cuisine') or '').strip(),
+                        'lat': item.get('lat'),
+                        'lon': item.get('lon'),
+                    })
+        logger.info("[budget:estimate] candidates=%s sample=%s", len(candidates), (candidates[0] if candidates else {}))
 
         if not candidates:
             return Response({'success': True, 'data': {'updated': 0, 'message': 'No missing prices found'}})
 
         client = OpenAI(api_key=api_key)
         system_prompt = (
-            "You are a travel budgeting analyst. For each item, estimate a realistic price in USD for the specified city. "
-            "Rules: return STRICT JSON list under key 'estimates'. Each entry: {category, id, price, averageMeal?, pricePerDay?}.\n"
-            "If category=food -> prefer 'averageMeal'. If attractions -> 'price'. If transport -> 'pricePerDay'. "
-            "Keep prices reasonable; if unknown, best reasonable assumption."
+            "You are a precise travel budgeting analyst. Estimate realistic prices in USD for items in a given city.\n"
+            "Return STRICT JSON with a single key 'estimates' that is an array. Each estimate MUST include: \n"
+            "- category: exactly one of flight|hotel|attractions|food|transport (echo the input category)\n"
+            "- id: exactly the 'id' from the input item (echo it verbatim; do not invent). If missing, return empty string.\n"
+            "- name: echo the input name if provided.\n"
+            "- price (number) when applicable\n"
+            "- averageMeal (number) when category=food\n"
+            "- pricePerDay (number) when category=transport\n"
+            "Rules:\n"
+            "- Use USD numeric values (no currency symbols).\n"
+            "- Prioritize local norms for the provided city.\n"
+            "- If unsure, provide your best reasonable estimate rather than omitting.\n"
         )
         user_payload = {
-            'city': trip.destination,
+            'city': str(city or trip.destination),
+            'country': str(country or ''),
             'items': candidates,
         }
         comp = client.chat.completions.create(
             model=(settings.OPENAI_MODEL or 'gpt-4o-mini'),
             temperature=0.2,
+            response_format={"type": "json_object"},
             messages=[
                 {'role': 'system', 'content': system_prompt},
                 {'role': 'user', 'content': json.dumps(user_payload)}
             ]
         )
         content = comp.choices[0].message.content if comp.choices else '{}'
+        logger.info("[budget:estimate] openai response len=%s", len(content or ''))
         try:
             estimates = json.loads(content).get('estimates', [])
         except Exception:
             estimates = []
 
-        # Index estimates by item id when possible, else by lowercased name
-        idx: dict[tuple, dict] = {}
+        # Retry once with stricter copy-echo instruction if empty
+        if not estimates and len(candidates) > 0:
+            try:
+                retry_prompt = system_prompt + "\nAlways echo the provided id and name exactly. Do not return empty lists."
+                comp2 = client.chat.completions.create(
+                    model=(settings.OPENAI_MODEL or 'gpt-4o-mini'),
+                    temperature=0.2,
+                    response_format={"type": "json_object"},
+                    messages=[
+                        {'role': 'system', 'content': retry_prompt},
+                        {'role': 'user', 'content': json.dumps(user_payload)}
+                    ]
+                )
+                content2 = comp2.choices[0].message.content if comp2.choices else '{}'
+                estimates = json.loads(content2).get('estimates', [])
+                logger.info("[budget:estimate] retry response len=%s estimates=%s", len(content2 or ''), len(estimates))
+            except Exception:
+                estimates = []
+        else:
+            logger.info("[budget:estimate] estimates=%s", len(estimates))
+
+        # Index estimates by item id and by name (fallback)
+        idx_by_id: dict[tuple, dict] = {}
+        idx_by_name: dict[tuple, dict] = {}
         for e in estimates:
-            key = (e.get('category'), str(e.get('id') or '').strip().lower())
-            idx[key] = e
+            cat = (e.get('category') or '').strip()
+            id_key = str(e.get('id') or '').strip().lower()
+            name_key = str(e.get('name') or '').strip().lower()
+            if id_key:
+                idx_by_id[(cat, id_key)] = e
+            if name_key:
+                idx_by_name[(cat, name_key)] = e
+        logger.info("[budget:estimate] idx_by_id=%s idx_by_name=%s", len(idx_by_id), len(idx_by_name))
 
         # Apply updates to TripItems and stages
         updated = 0
         items_qs = list(TripItem.objects.filter(trip=trip))
+        stage_updates = 0
         for stage in stages:
             changed = False
             sel = stage.selected_items or []
@@ -2205,23 +2320,27 @@ def estimate_budget(request, trip_id):
             for it in sel:
                 try:
                     ident = str(it.get('id') or '').strip().lower()
-                    key = (stage.stage_type, ident)
-                    est = idx.get(key)
+                    name_norm = str(it.get('name') or '').strip().lower()
+                    est = None
+                    if ident:
+                        est = idx_by_id.get((stage.stage_type, ident))
+                    if not est and name_norm:
+                        est = idx_by_name.get((stage.stage_type, name_norm))
                     if est:
                         price = est.get('price')
                         avg = est.get('averageMeal')
                         pday = est.get('pricePerDay')
-                        if stage.stage_type == 'food' and avg:
+                        if stage.stage_type == 'food' and avg is not None:
                             it['averageMeal'] = float(avg)
                             if not it.get('price'):
                                 it['price'] = float(avg)
                             changed = True; updated += 1
-                        elif stage.stage_type == 'transport' and pday:
+                        elif stage.stage_type == 'transport' and pday is not None:
                             it['pricePerDay'] = float(pday)
                             if not it.get('price'):
                                 it['price'] = float(pday)
                             changed = True; updated += 1
-                        elif price:
+                        elif price is not None:
                             it['price'] = float(price); changed = True; updated += 1
                 except Exception:
                     pass
@@ -2229,13 +2348,16 @@ def estimate_budget(request, trip_id):
             if changed:
                 stage.selected_items = new_sel
                 stage.save()
+                stage_updates += 1
 
         # Sync TripItems prices as well (best-effort by external_id or name)
+        ti_updates = 0
         for ti in items_qs:
             try:
                 ident = (ti.external_id or ti.name or '').strip().lower()
+                name_norm = (ti.name or '').strip().lower()
                 for cat in ['flight','hotel','attractions','food','transport']:
-                    est = idx.get((cat, ident))
+                    est = idx_by_id.get((cat, ident)) or idx_by_name.get((cat, name_norm))
                     if not est:
                         continue
                     price = est.get('price')
@@ -2252,9 +2374,39 @@ def estimate_budget(request, trip_id):
                         md.setdefault('price', float(pday))
                     ti.metadata = md
                     ti.save()
+                    ti_updates += 1
             except Exception:
                 pass
+        logger.info("[budget:estimate] stage_updates=%s ti_updates=%s updated_fields=%s", stage_updates, ti_updates, updated)
 
-        return Response({'success': True, 'data': {'updated': updated}})
+        # If nothing was updated, apply conservative defaults to avoid empty budgets
+        defaults_applied = 0
+        if updated == 0:
+            defaults_applied = 0
+            for stage in stages:
+                sel = stage.selected_items or []
+                changed = False
+                for it in sel:
+                    try:
+                        if stage.stage_type == 'food' and not (it.get('averageMeal') or it.get('price')):
+                            it['averageMeal'] = 15.0
+                            it.setdefault('price', 15.0)
+                            changed = True; defaults_applied += 1
+                        elif stage.stage_type == 'transport' and not (it.get('pricePerDay') or it.get('price')):
+                            it['pricePerDay'] = 12.0
+                            it.setdefault('price', 12.0)
+                            changed = True; defaults_applied += 1
+                        elif stage.stage_type == 'attractions' and not it.get('price'):
+                            it['price'] = 10.0
+                            changed = True; defaults_applied += 1
+                    except Exception:
+                        pass
+                if changed:
+                    stage.selected_items = sel
+                    stage.save()
+            updated = defaults_applied
+
+        logger.info("[budget:estimate] done trip_id=%s estimates=%s updated=%s defaults_applied=%s", str(trip_id), len(estimates), updated, defaults_applied)
+        return Response({'success': True, 'data': {'updated': updated, 'estimates_count': len(estimates), 'defaults_applied': defaults_applied}})
     except Exception as e:
         return Response({'success': False, 'error': f'Failed to estimate budget: {str(e)}'}, status=500)

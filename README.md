@@ -1,4 +1,4 @@
-## Travel Planner (AI-powered) – Monorepo
+## Travel Planner (AI-powered)
 
 An AI-assisted travel planning application with a Django REST API backend and a React (Vite + TypeScript + shadcn/ui) frontend. It supports user authentication, trip creation and management, AI-powered flight and hotel search via SerpAPI and OpenAI, trip budgeting, and live itinerary tracking.
 
@@ -105,6 +105,62 @@ Notes:
 
 ---
 
+## Deep Dive Guide
+
+This section explains the project in depth: architecture, data model, request flows, key components, external integrations, and how the end-to-end planning experience is built.
+
+### Table of contents
+- Architecture overview
+- Backend internals (Django + DRF)
+- AI and external data integrations
+- Frontend internals (React + Vite + shadcn/ui)
+- End-to-end user flows (Auth, Planning, Results, Save)
+- Planning stages lifecycle and persistence
+- Caching and client-side data
+- Configuration and environment variables
+- Deployment notes (prod hardening)
+- Troubleshooting cheatsheet
+
+### Architecture overview
+
+```mermaid
+graph LR
+  subgraph Browser
+    UI[React + Vite + TS + shadcn/ui]
+  end
+
+  subgraph API[Django REST API]
+    AUTH[Token Auth]
+    CRUD[Trips/Items/Budget/Itinerary]
+    STAGES[Planning Stages]
+    LIVE[Live Itinerary]
+    AIEND[AI Endpoints]
+    GEO[Geoapify Places]
+    EVENTS[Ticketmaster Events]
+  end
+
+  DB[(PostgreSQL/SQLite)]
+
+  UI -->|Authorization: Token <token>| AUTH
+  AUTH --> CRUD
+  AUTH --> STAGES
+  AUTH --> LIVE
+  AIEND -->|SerpAPI + OpenAI| EXT1[(Flights/Hotels)]
+  GEO -->|Geoapify| EXT2[(Places)]
+  EVENTS -->|Ticketmaster| EXT3[(Events)]
+  API --> DB
+```
+
+- Frontend handles UX, auth token storage, and calls the API via `src/services/*`.
+- Backend authenticates every non-auth request with DRF TokenAuth, persists trips and selections, and orchestrates AI/data services.
+- External services:
+  - Flights: SerpAPI Google Flights via `FlightAIAgent` (with optional OpenAI reasoning) in `travel_backend/travel/flight_agent.py`.
+  - Hotels: SerpAPI Google Hotels via `HotelAIAgent` in `travel_backend/travel/hotel_agent.py`.
+  - Places: Geoapify Places for attractions/food/transport in `views.py`.
+  - Events: Ticketmaster Discovery API.
+
+---
+
 ## Backend architecture
 
 ### Installed apps and middleware
@@ -181,100 +237,6 @@ All non-auth endpoints require `Authorization: Token <token>`.
 
 ---
 
-## Frontend architecture
-
-- `src/contexts/AuthContext.tsx`: handles token lifecycle, profile load, and provides auth state
-- `src/services/`: API clients
-  - `authService.ts`: login/signup/logout, user profile
-  - `tripService.ts`: trips, items, planning stages, summaries
-  - `flightService.ts`: flights AI search and airport suggestions
-  - `hotelService.ts`: hotels AI search
-- `src/components/`: UI and feature components including trip planning flow and results
-- `src/pages/Index.tsx`: entry view; switches between onboarding, planning, results, login, signup, and profile
-
-Build/preview:
-```bash
-npm run build
-npm run preview
-```
-
----
-
-## Configuration and environment
-
-### Backend `.env` (example)
-See `travel_backend/.env.example`.
-
-### Frontend `.env` (optional)
-See `travel_frontend/.env.example`. By default, services use `http://localhost:8000/api`. For deployments, either set `VITE_API_BASE_URL` and refactor services to read it, or update the hardcoded constants.
-
-### CORS/CSRF
-`CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS` pre-include common dev ports (5173, 3000, 8080). Add your production domain(s) when deploying.
-
----
-
-## Security notes (critical before pushing public)
-- Move all secrets from `settings.py` to environment variables (`DJANGO_SECRET_KEY`, database credentials). Consider using `python-decouple` or `os.getenv` + `python-dotenv`.
-- Rotate any previously committed keys/passwords (database, OpenAI, SerpAPI, Django secret key).
-- Do not commit `.env` files; they are ignored by `.gitignore`.
-- In `flight_agent.py`, avoid defaulting `SERPAPI_KEY` in code; read from env only.
-
----
-
-## Deep Dive Guide
-
-This section explains the project in depth: architecture, data model, request flows, key components, external integrations, and how the end-to-end planning experience is built.
-
-### Table of contents
-- Architecture overview
-- Backend internals (Django + DRF)
-- AI and external data integrations
-- Frontend internals (React + Vite + shadcn/ui)
-- End-to-end user flows (Auth, Planning, Results, Save)
-- Planning stages lifecycle and persistence
-- Caching and client-side data
-- Configuration and environment variables
-- Deployment notes (prod hardening)
-- Troubleshooting cheatsheet
-
-### Architecture overview
-
-```mermaid
-graph LR
-  subgraph Browser
-    UI[React + Vite + TS + shadcn/ui]
-  end
-
-  subgraph API[Django REST API]
-    AUTH[Token Auth]
-    CRUD[Trips/Items/Budget/Itinerary]
-    STAGES[Planning Stages]
-    LIVE[Live Itinerary]
-    AIEND[AI Endpoints]
-    GEO[Geoapify Places]
-    EVENTS[Ticketmaster Events]
-  end
-
-  DB[(PostgreSQL/SQLite)]
-
-  UI -->|Authorization: Token <token>| AUTH
-  AUTH --> CRUD
-  AUTH --> STAGES
-  AUTH --> LIVE
-  AIEND -->|SerpAPI + OpenAI| EXT1[(Flights/Hotels)]
-  GEO -->|Geoapify| EXT2[(Places)]
-  EVENTS -->|Ticketmaster| EXT3[(Events)]
-  API --> DB
-```
-
-- Frontend handles UX, auth token storage, and calls the API via `src/services/*`.
-- Backend authenticates every non-auth request with DRF TokenAuth, persists trips and selections, and orchestrates AI/data services.
-- External services:
-  - Flights: SerpAPI Google Flights via `FlightAIAgent` (with optional OpenAI reasoning) in `travel_backend/travel/flight_agent.py`.
-  - Hotels: SerpAPI Google Hotels via `HotelAIAgent` in `travel_backend/travel/hotel_agent.py`.
-  - Places: Geoapify Places for attractions/food/transport in `views.py`.
-  - Events: Ticketmaster Discovery API.
-
 ### Backend internals (Django + DRF)
 
 - Models (`travel/models.py`):
@@ -322,6 +284,28 @@ graph LR
 - Events (`views.py`):
   - `GET /api/events/search/`: Ticketmaster Discovery API (optional; key required).
 
+---
+
+## Frontend architecture
+
+- `src/contexts/AuthContext.tsx`: handles token lifecycle, profile load, and provides auth state
+- `src/services/`: API clients
+  - `authService.ts`: login/signup/logout, user profile
+  - `tripService.ts`: trips, items, planning stages, summaries
+  - `flightService.ts`: flights AI search and airport suggestions
+  - `hotelService.ts`: hotels AI search
+- `src/components/`: UI and feature components including trip planning flow and results
+- `src/pages/Index.tsx`: entry view; switches between onboarding, planning, results, login, signup, and profile
+
+Build/preview:
+```bash
+npm run build
+npm run preview
+```
+
+---
+
+
 ### Frontend internals (React + Vite + shadcn/ui)
 
 - Auth and state:
@@ -345,6 +329,28 @@ graph LR
 
 - UX notifications
   - Toasts (`components/ui/toaster.tsx` + `hooks/use-toast.ts`): used for login/signup success/failure and can be reused for other flows.
+
+---
+
+## Configuration and environment
+
+### Backend `.env` (example)
+See `travel_backend/.env.example`.
+
+### Frontend `.env` (optional)
+See `travel_frontend/.env.example`. By default, services use `http://localhost:8000/api`. For deployments, either set `VITE_API_BASE_URL` and refactor services to read it, or update the hardcoded constants.
+
+### CORS/CSRF
+`CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS` pre-include common dev ports (5173, 3000, 8080). Add your production domain(s) when deploying.
+
+---
+
+## Security notes (critical before pushing public)
+- Move all secrets from `settings.py` to environment variables (`DJANGO_SECRET_KEY`, database credentials). Consider using `python-decouple` or `os.getenv` + `python-dotenv`.
+- Rotate any previously committed keys/passwords (database, OpenAI, SerpAPI, Django secret key).
+- Do not commit `.env` files; they are ignored by `.gitignore`.
+- In `flight_agent.py`, avoid defaulting `SERPAPI_KEY` in code; read from env only.
+
 
 ### End-to-end user flows
 
@@ -419,20 +425,6 @@ graph LR
 
 - Flight/Hotel AI errors
   - Confirm both `OPENAI_API_KEY` and `SERPAPI_KEY` are configured. The agents will log attempts and fallbacks.
-
-
-
-
-## Deployment notes
-- Backend: configure environment variables, run migrations, and serve via gunicorn/uvicorn behind Nginx or a platform (Render/Heroku/etc.). Ensure `ALLOWED_HOSTS`, CORS, and database are set for production. Configure static files.
-- Frontend: `npm run build` produces `dist/`. Host via any static host or behind the same domain as the API.
-
----
-
-## Troubleshooting
-- 401/403 from API: ensure you include `Authorization: Token <token>` after login/signup. Confirm CORS and CSRF configuration for your origin.
-- AI search errors: verify `OPENAI_API_KEY` and `SERPAPI_KEY`. Network firewalls may block external calls.
-- DB errors: verify Postgres connectivity and credentials; apply migrations.
 
 ---
 
