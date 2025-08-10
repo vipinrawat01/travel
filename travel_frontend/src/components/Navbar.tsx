@@ -52,6 +52,7 @@ const Navbar: React.FC<NavbarProps> = ({ onAuthClick, onProfileClick, isAuthenti
                   <Bot className="w-4 h-4" />
                   <span>AI Planner</span>
                 </Button>
+                <span className="text-xs px-2 py-1 rounded-full bg-green-100 text-green-700 border border-green-200">Logged in</span>
               </>
             )}
 

@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { ArrowLeft, Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import { toast } from '@/components/ui/use-toast';
 
 interface SignupPageProps {
   onBack: () => void;
@@ -47,11 +48,13 @@ const SignupPage: React.FC<SignupPageProps> = ({ onBack, onSwitchToLogin }) => {
     
     try {
       await signup(formData);
-      // Signup successful - the AuthContext will handle the state update
-      // You can add navigation logic here if needed
+      toast({ title: 'Account created', description: 'Please sign in to continue.' });
+      // After successful signup, direct user to login page
+      onSwitchToLogin();
     } catch (error) {
       // Error is handled by the AuthContext
-      console.error('Signup failed:', error);
+      const message = error instanceof Error ? error.message : 'Signup failed';
+      toast({ title: 'Signup failed', description: message, variant: 'destructive' });
     } finally {
       setIsLoading(false);
     }

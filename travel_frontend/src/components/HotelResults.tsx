@@ -23,41 +23,7 @@ interface HotelResultsProps {
 }
 
 const HotelResults: React.FC<HotelResultsProps> = ({ onHotelSelect, selectedHotel }) => {
-  const [hotels, setHotels] = useState<Hotel[]>([
-    {
-      id: 'h1',
-      name: 'Tokyo Grand Hotel',
-      price: 180,
-      rating: 4.8,
-      location: 'Shibuya',
-      distance: '0.5km from center',
-      amenities: ['Free WiFi', 'Parking', 'Restaurant'],
-      image: '/placeholder.svg',
-      priceCategory: 'luxury'
-    },
-    {
-      id: 'h2',
-      name: 'Sakura Inn',
-      price: 95,
-      rating: 4.5,
-      location: 'Shinjuku',
-      distance: '1.2km from center',
-      amenities: ['Free WiFi', 'Breakfast'],
-      image: '/placeholder.svg',
-      priceCategory: 'comfort'
-    },
-    {
-      id: 'h3',
-      name: 'Budget Tokyo Stay',
-      price: 45,
-      rating: 4.1,
-      location: 'Asakusa',
-      distance: '2.1km from center',
-      amenities: ['Free WiFi'],
-      image: '/placeholder.svg',
-      priceCategory: 'budget'
-    }
-  ]);
+  const [hotels, setHotels] = useState<Hotel[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 

@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { ArrowLeft, Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import { toast } from '@/components/ui/use-toast';
 import { useNavigate } from 'react-router-dom';
 
 interface LoginPageProps {
@@ -31,10 +32,12 @@ const LoginPage: React.FC<LoginPageProps> = ({ onBack, onSwitchToSignup }) => {
     
     try {
       await login(formData);
+      toast({ title: 'Logged in', description: 'Welcome back!' });
       navigate('/');
     } catch (error) {
       // Error is handled by the AuthContext
-      console.error('Login failed:', error);
+      const message = error instanceof Error ? error.message : 'Login failed';
+      toast({ title: 'Login failed', description: message, variant: 'destructive' });
     } finally {
       setIsLoading(false);
     }

@@ -100,8 +100,7 @@ class AuthService {
       body: JSON.stringify(userData),
     });
 
-    this.token = response.token;
-    localStorage.setItem('authToken', response.token);
+    // Do not auto-login after signup; require explicit login per UX requirement
     return response;
   }
 

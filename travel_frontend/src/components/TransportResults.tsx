@@ -76,63 +76,7 @@ const TransportResults: React.FC<TransportResultsProps> = ({
     return () => window.removeEventListener('itinerary:refresh', onRefresh);
   }, []);
 
-  const transportOptions: Transport[] = [
-    {
-      id: 't1',
-      type: 'train',
-      name: 'JR Pass (7 Days)',
-      description: 'Unlimited travel on JR trains including Shinkansen',
-      pricePerDay: 40,
-      coverage: 'All Tokyo & Surroundings',
-      convenience: 5,
-      features: ['Shinkansen Access', 'No Reservations Needed', 'Airport Express'],
-      bestFor: 'Comprehensive city exploration'
-    },
-    {
-      id: 't2',
-      type: 'train',
-      name: 'Tokyo Metro Pass',
-      description: '3-day unlimited subway access',
-      pricePerDay: 8,
-      coverage: 'Tokyo Metro Lines',
-      convenience: 4,
-      features: ['All Metro Lines', 'Tourist Discount', 'Easy Card'],
-      bestFor: 'Budget-friendly metro travel'
-    },
-    {
-      id: 't3',
-      type: 'bus',
-      name: 'Tokyo Tour Bus',
-      description: 'Hop-on hop-off sightseeing bus',
-      pricePerDay: 25,
-      coverage: 'Major Tourist Areas',
-      convenience: 3,
-      features: ['Audio Guide', 'Multiple Routes', 'Scenic Views'],
-      bestFor: 'Sightseeing and photography'
-    },
-    {
-      id: 't4',
-      type: 'car',
-      name: 'Rental Car',
-      description: 'Private car rental with GPS navigation',
-      pricePerDay: 60,
-      coverage: 'Entire Tokyo Region',
-      convenience: 4,
-      features: ['GPS Navigation', 'Air Conditioning', 'Parking Assistance'],
-      bestFor: 'Families and flexible schedules'
-    },
-    {
-      id: 't5',
-      type: 'bike',
-      name: 'City Bike Rental',
-      description: 'Electric bike rental for eco-friendly travel',
-      pricePerDay: 15,
-      coverage: 'Central Tokyo',
-      convenience: 3,
-      features: ['Electric Assist', 'Basket Included', 'Multiple Stations'],
-      bestFor: 'Short distances and exercise'
-    }
-  ];
+  const transportOptions: any[] = [];
 
   const getTransportIcon = (type: string) => {
     switch (type) {
