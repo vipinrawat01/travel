@@ -149,71 +149,80 @@ REST_FRAMEWORK = {
     'PAGE_SIZE': 10
 }
 
-# CORS settings
-_default_cors = [
-    "http://localhost:8080",
-    "http://localhost:8081",
-    "http://127.0.0.1:8080",
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-]
+# # CORS settings
+# _default_cors = [
+#     "http://localhost:8080",
+#     "http://localhost:8081",
+#     "http://127.0.0.1:8080",
+#     "http://localhost:3000",
+#     "http://127.0.0.1:3000",
+#     "http://localhost:5173",
+#     "http://127.0.0.1:5173",
+# ]
 
-# Allow adding extra origins via env (comma-separated)
-_extra_cors = config('CORS_ALLOWED_ORIGINS', default='', cast=str)
-if _extra_cors:
-    CORS_ALLOWED_ORIGINS = _default_cors + [o.strip() for o in _extra_cors.split(',') if o.strip()]
-else:
-    CORS_ALLOWED_ORIGINS = _default_cors
+# # Allow adding extra origins via env (comma-separated)
+# _extra_cors = config('CORS_ALLOWED_ORIGINS', default='', cast=str)
+# if _extra_cors:
+#     CORS_ALLOWED_ORIGINS = _default_cors + [o.strip() for o in _extra_cors.split(',') if o.strip()]
+# else:
+#     CORS_ALLOWED_ORIGINS = _default_cors
 
-# Optional: allow all origins via env toggle (for debugging)
-CORS_ALLOW_ALL_ORIGINS = config('CORS_ALLOW_ALL_ORIGINS', default=False, cast=bool)
+# # Optional: allow all origins via env toggle (for debugging)
+# CORS_ALLOW_ALL_ORIGINS = config('CORS_ALLOW_ALL_ORIGINS', default=False, cast=bool)
 
-# Optional: regex support (helpful for Vercel preview URLs)
-_regex_env = config('CORS_ALLOWED_ORIGIN_REGEXES', default='', cast=str)
-_regexes = [r"^https://.*\\.vercel\\.app$"]  # include Vercel previews by default
-if _regex_env:
-    _regexes.extend([r.strip() for r in _regex_env.split(',') if r.strip()])
-CORS_ALLOWED_ORIGIN_REGEXES = _regexes
+# # Optional: regex support (helpful for Vercel preview URLs)
+# _regex_env = config('CORS_ALLOWED_ORIGIN_REGEXES', default='', cast=str)
+# _regexes = [r"^https://.*\\.vercel\\.app$"]  # include Vercel previews by default
+# if _regex_env:
+#     _regexes.extend([r.strip() for r in _regex_env.split(',') if r.strip()])
+# CORS_ALLOWED_ORIGIN_REGEXES = _regexes
 
+# CORS_ALLOW_CREDENTIALS = True
+
+# CORS_ALLOW_METHODS = [
+#     'DELETE',
+#     'GET',
+#     'OPTIONS',
+#     'PATCH',
+#     'POST',
+#     'PUT',
+# ]
+
+# CORS_ALLOW_HEADERS = [
+#     'accept',
+#     'accept-encoding',
+#     'authorization',
+#     'content-type',
+#     'dnt',
+#     'origin',
+#     'user-agent',
+#     'x-csrftoken',
+#     'x-requested-with',
+# ]
+
+# # Trust local dev origins for CSRF on session-authenticated endpoints
+# _default_csrf = [
+#     "http://localhost:5173",
+#     "http://127.0.0.1:5173",
+#     "http://localhost:3000",
+#     "http://127.0.0.1:3000",
+#     "http://localhost:8080",
+#     "http://127.0.0.1:8080",
+# ]
+# _extra_csrf = config('CSRF_TRUSTED_ORIGINS', default='', cast=str)
+# if _extra_csrf:
+#     CSRF_TRUSTED_ORIGINS = _default_csrf + [o.strip() for o in _extra_csrf.split(',') if o.strip()]
+# else:
+#     CSRF_TRUSTED_ORIGINS = _default_csrf
+
+# Allow all origins permanently
+CORS_ALLOW_ALL_ORIGINS = True
+
+# Optional: keep credentials support if needed
 CORS_ALLOW_CREDENTIALS = True
 
-CORS_ALLOW_METHODS = [
-    'DELETE',
-    'GET',
-    'OPTIONS',
-    'PATCH',
-    'POST',
-    'PUT',
-]
-
-CORS_ALLOW_HEADERS = [
-    'accept',
-    'accept-encoding',
-    'authorization',
-    'content-type',
-    'dnt',
-    'origin',
-    'user-agent',
-    'x-csrftoken',
-    'x-requested-with',
-]
-
-# Trust local dev origins for CSRF on session-authenticated endpoints
-_default_csrf = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://localhost:8080",
-    "http://127.0.0.1:8080",
-]
-_extra_csrf = config('CSRF_TRUSTED_ORIGINS', default='', cast=str)
-if _extra_csrf:
-    CSRF_TRUSTED_ORIGINS = _default_csrf + [o.strip() for o in _extra_csrf.split(',') if o.strip()]
-else:
-    CSRF_TRUSTED_ORIGINS = _default_csrf
+# Trust all for CSRF (if using session authentication)
+CSRF_TRUSTED_ORIGINS = ["https://*", "http://*"]
 
 # ---------------------- External API Keys ----------------------
 # Expose keys via settings so app code can read consistently without relying on os.environ
