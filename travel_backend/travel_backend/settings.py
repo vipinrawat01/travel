@@ -216,7 +216,7 @@ REST_FRAMEWORK = {
 #     CSRF_TRUSTED_ORIGINS = _default_csrf
 
 # Allow all origins permanently
-CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_ALL_ORIGINS = False
 
 # Optional: keep credentials support if needed
 CORS_ALLOW_CREDENTIALS = True
