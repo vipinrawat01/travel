@@ -214,15 +214,28 @@ REST_FRAMEWORK = {
 #     CSRF_TRUSTED_ORIGINS = _default_csrf + [o.strip() for o in _extra_csrf.split(',') if o.strip()]
 # else:
 #     CSRF_TRUSTED_ORIGINS = _default_csrf
+# ---------------------- CORS & CSRF Settings ----------------------
+# Read from env to decide whether to allow all origins
+CORS_ALLOW_ALL_ORIGINS = config('CORS_ALLOW_ALL_ORIGINS', default=False, cast=bool)
 
-# Allow all origins permanently
-CORS_ALLOW_ALL_ORIGINS = False
+# If not allowing all origins, set specific allowed origins
+if not CORS_ALLOW_ALL_ORIGINS:
+    CORS_ALLOWED_ORIGINS = config(
+        'CORS_ALLOWED_ORIGINS',
+        default='https://travel-alpha-liard.vercel.app,http://localhost:3000',
+        cast=Csv()
+    )
 
-# Optional: keep credentials support if needed
+# Allow sending cookies/credentials if needed
 CORS_ALLOW_CREDENTIALS = True
 
-# Trust all for CSRF (if using session authentication)
-CSRF_TRUSTED_ORIGINS = ["https://travel-alpha-liard.vercel.app", "http://localhost:3000"]
+# CSRF trusted origins (for form submissions / session auth)
+CSRF_TRUSTED_ORIGINS = config(
+    'CSRF_TRUSTED_ORIGINS',
+    default='https://travel-alpha-liard.vercel.app,http://localhost:3000',
+    cast=Csv()
+)
+
 
 # ---------------------- External API Keys ----------------------
 # Expose keys via settings so app code can read consistently without relying on os.environ
