@@ -222,7 +222,7 @@ CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = True
 
 # Trust all for CSRF (if using session authentication)
-CSRF_TRUSTED_ORIGINS = ["https://*", "http://*"]
+CSRF_TRUSTED_ORIGINS = ["https://travel-alpha-liard.vercel.app", "http://localhost:3000"]
 
 # ---------------------- External API Keys ----------------------
 # Expose keys via settings so app code can read consistently without relying on os.environ
